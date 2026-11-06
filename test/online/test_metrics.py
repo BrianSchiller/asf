@@ -16,6 +16,10 @@ def test_closed_gap() -> None:
     assert closed_gap(10, 20, 10) == 1.0
     assert closed_gap(20, 20, 10) == 0.0
     assert math.isnan(closed_gap(1, 5, 5))
+    assert closed_gap(10, 5, 10, maximize=True) == 1.0
+    assert closed_gap(5, 5, 10, maximize=True) == 0.0
+    assert closed_gap(2, 5, 10, maximize=True) < 0
+    assert math.isnan(closed_gap(5, 5, 5, maximize=True))
 
 
 def test_detection_metrics() -> None:

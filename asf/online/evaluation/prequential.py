@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -36,6 +37,7 @@ class OnlineResult:
         Total wall-clock time the selector spent retraining.
     drift_points : tuple[int, ...]
         Injected drift points of the stream (ground truth).
+    maximize : bool
     """
 
     steps: pd.DataFrame
@@ -43,6 +45,7 @@ class OnlineResult:
     drift_steps: list[int]
     retrain_seconds: float
     drift_points: tuple[int, ...]
+    maximize: bool = False
 
     def summary(self, detection_tolerance: int = 100) -> dict[str, float]:
         """Aggregate numbers for result tables."""
@@ -55,7 +58,7 @@ class OnlineResult:
             "mean_runs_per_instance": float(s["n_runs"].mean()),
             "sbs_cost": sbs,
             "vbs_cost": vbs,
-            "closed_gap": closed_gap(user, sbs, vbs),
+            "closed_gap": closed_gap(user, sbs, vbs, maximize=self.maximize),
             "n_retrains": float(len(self.retrain_steps)),
             "retrain_seconds": self.retrain_seconds,
             "n_drift_signals": float(len(self.drift_steps)),
@@ -89,19 +92,25 @@ def run_prequential(
        bin-packing quality use ``cutoff=inf``; nothing is ever censored.)
     3. Scoring, then ``selector.observe(...)``.
 
-    Scoring: ``user_cost`` is the PAR-k score of what the user receives:
+    For minimization, ``user_cost`` is the PAR-k score of what the user receives.
+    For ``selector.maximize=True``, it is the raw quality score (higher is better)
+    and the stream must have ``cutoff=inf`` and no positive run budgets: quality
+    scores alone cannot establish whether a timed run finished. In that mode
+    ``compute_cost`` is NaN because resource use cannot be inferred from scores.
+
+    The result choice depends on the scoring mode:
 
     * ``"primary"``: the first scheduled algorithm's result.
     * ``"best_of_scheduled"``: the best result among all scheduled algorithms
-      (parallel runs, as in Rook et al.).
+      (minimum cost or maximum quality; parallel runs, as in Rook et al.).
 
-    ``compute_cost`` is always the summed capped runtime of all executed
-    algorithms, i.e. the resources spent. It is reported separately because it
-    is not on the same scale as PAR-k.
+    For runtime minimization, ``compute_cost`` is the summed capped runtime of
+    all executed algorithms, i.e. the resources spent. It is reported separately
+    because it is not on the same scale as PAR-k.
 
     The default mode is the selector's ``RESULT_MODE``.
 
-    SBS is the single algorithm with the best mean PAR-k on the warm-start
+    SBS is the single algorithm with the best mean score on the warm-start
     data, or on the evaluated stream itself for a cold start
     (``n_warmstart=0``). VBS is the per-instance oracle.
 
@@ -126,13 +135,20 @@ def run_prequential(
         raise ValueError(f"Unknown result_mode: {mode!r}")
     warm, tail = stream.split(n_warmstart)
     cutoff = stream.cutoff
+    maximize = selector.maximize
+    if maximize and not (math.isinf(cutoff) and cutoff > 0):
+        raise ValueError(
+            "Maximizing quality requires cutoff=inf: quality scores do not "
+            "provide the runtimes needed to simulate a finite cutoff."
+        )
 
     def pen(v: float) -> float:
-        return penalised_runtime(v, cutoff, par_factor)
+        return float(v) if maximize else penalised_runtime(v, cutoff, par_factor)
 
     selector.fit(warm.features, warm.performance, **(fit_kwargs or {}))
     reference = warm if len(warm) else tail
-    sbs_algo = reference.performance.map(pen).mean().idxmin()
+    mean_performance = reference.performance.map(pen).mean()
+    sbs_algo = mean_performance.idxmax() if maximize else mean_performance.idxmin()
 
     rows: list[dict[str, Any]] = []
     retrains_seen = 0
@@ -143,6 +159,11 @@ def run_prequential(
         runs: dict[str, float] = {}
         censored: set[str] = set()
         for algo, budget in schedule:
+            if maximize and budget is not None and budget > 0:
+                raise ValueError(
+                    "Maximizing quality requires unlimited run budgets: "
+                    "quality scores do not provide runtimes."
+                )
             if algo in runs:
                 continue
             limit = cutoff if not budget or budget <= 0 else min(budget, cutoff)
@@ -157,7 +178,14 @@ def run_prequential(
         scored = {
             a: (par_factor * cutoff if a in censored else rt) for a, rt in runs.items()
         }
-        user_cost = scored[primary_algo] if mode == "primary" else min(scored.values())
+        user_cost = (
+            scored[primary_algo]
+            if mode == "primary"
+            else (max(scored.values()) if maximize else min(scored.values()))
+        )
+        vbs_score = (
+            max(pen(v) for v in truth) if maximize else min(pen(v) for v in truth)
+        )
 
         selector.observe(
             Observation(
@@ -177,8 +205,8 @@ def run_prequential(
                 "primary": primary_algo,
                 "n_runs": len(runs),
                 "user_cost": float(user_cost),
-                "compute_cost": float(sum(runs.values())),
-                "vbs_cost": min(pen(v) for v in truth),
+                "compute_cost": float("nan") if maximize else float(sum(runs.values())),
+                "vbs_cost": vbs_score,
                 "sbs_cost": pen(truth[sbs_algo]),
                 "retrained": retrained,
             }
@@ -190,4 +218,5 @@ def run_prequential(
         drift_steps=list(selector.drift_steps),
         retrain_seconds=selector.retrain_seconds,
         drift_points=tail.drift_points,
+        maximize=maximize,
     )

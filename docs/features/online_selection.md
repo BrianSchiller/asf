@@ -17,10 +17,17 @@ reported back, so the selector's data is partially observed.
 
 ## Scoring
 
-`run_prequential` reports, per instance, `user_cost` (PAR-k of what the user
-gets) and `compute_cost` (summed capped runtimes of everything that ran). Which
-result the user gets depends on the selector's `RESULT_MODE`: `"primary"` (the
-first algorithm) or `"best_of_scheduled"` (parallel runs, best result wins).
+For runtime minimization, `run_prequential` reports, per instance, `user_cost`
+(PAR-k of what the user gets) and `compute_cost` (summed capped runtimes of
+everything that ran). Which result the user gets depends on the selector's
+`RESULT_MODE`: `"primary"` (the first algorithm) or `"best_of_scheduled"`
+(parallel runs, best result wins).
+By default, lower runtime is better. For `maximize=True`, higher quality scores
+are better: SBS, VBS, `best_of_scheduled`, and closed gap all use that direction.
+Use `cutoff=inf` and unlimited run budgets, since quality scores do not reveal
+whether a time-limited run would finish. In this mode the legacy `user_cost`,
+`sbs_cost`, and `vbs_cost` fields contain quality scores; `compute_cost` is NaN
+because resource usage cannot be inferred from quality alone.
 
 ## Building blocks
 
@@ -38,7 +45,7 @@ first algorithm) or `"best_of_scheduled"` (parallel runs, best result wins).
 
 * `StaticOnlineSelector`: any offline ASF selector, never updated (lower bound).
 * `OnlinePairwiseSelector`: partial one-vs-one selector with selectable
-  `variant="paper"` and `variant="jeroen_code"` implementations.
+  `variant="paper"` and `variant="code"` implementations.
 
 The paper variant supports `additional_strategy="uniform"` or
 `"error_guided"` (sampling inversely to estimated pairwise accuracy). The

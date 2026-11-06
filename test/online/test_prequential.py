@@ -114,3 +114,45 @@ def test_batch_predict_still_works(stream: InstanceStream) -> None:
     out = sel.predict(stream.features.iloc[20:23])
     assert list(out) == ["i20", "i21", "i22"]
     assert all(len(v) == 1 for v in out.values())
+
+
+def test_maximize_quality_uses_higher_scores_for_sbs_vbs_and_schedules() -> None:
+    features = pd.DataFrame({"f": [0.0, 1.0, 2.0]})
+    performance = pd.DataFrame({"a": [5.0, 3.0, 8.0], "b": [1.0, 9.0, 4.0]})
+    stream = InstanceStream(features, performance, cutoff=float("inf"))
+
+    primary = run_prequential(_Scripted(maximize=True), stream, n_warmstart=1)
+    assert primary.maximize
+    assert primary.steps["user_cost"].tolist() == [3.0, 8.0]
+    assert primary.steps["vbs_cost"].tolist() == [9.0, 8.0]
+    assert primary.steps["sbs_cost"].tolist() == [3.0, 8.0]
+    assert primary.summary()["closed_gap"] == 0.0
+    assert primary.steps["compute_cost"].isna().all()
+
+    parallel = run_prequential(
+        _Scripted(maximize=True), stream, n_warmstart=1, result_mode="best_of_scheduled"
+    )
+    assert parallel.steps["user_cost"].tolist() == [9.0, 8.0]
+    assert parallel.summary()["closed_gap"] == 1.0
+
+    cold = run_prequential(_Scripted(maximize=True), stream)
+    assert cold.steps["sbs_cost"].tolist() == [5.0, 3.0, 8.0]
+
+
+def test_maximize_quality_rejects_runtime_constraints() -> None:
+    features = pd.DataFrame({"f": [0.0, 1.0]})
+    performance = pd.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
+    with pytest.raises(ValueError, match="cutoff=inf"):
+        run_prequential(
+            _Scripted(maximize=True), InstanceStream(features, performance, cutoff=10)
+        )
+
+    class _Budgeted(_Scripted):
+        def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
+            return [("a", 5.0)]
+
+    with pytest.raises(ValueError, match="unlimited run budgets"):
+        run_prequential(
+            _Budgeted(maximize=True),
+            InstanceStream(features, performance, cutoff=float("inf")),
+        )

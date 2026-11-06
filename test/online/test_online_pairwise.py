@@ -173,6 +173,21 @@ def test_best_of_scheduled_is_default_and_two_runs_per_instance() -> None:
     assert (res.steps["user_cost"] <= res.steps["compute_cost"]).all()
 
 
+def test_code_variant_maximizes_quality_end_to_end() -> None:
+    features = pd.DataFrame({"f": [0.0, 1.0, 0.0, 1.0, 0.0, 1.0]})
+    performance = pd.DataFrame(
+        {"a": [1.0, 9.0, 1.0, 9.0, 1.0, 9.0], "b": [9.0, 1.0, 9.0, 1.0, 9.0, 1.0]}
+    )
+    stream = InstanceStream(features, performance, cutoff=float("inf"))
+    selector = OnlinePairwiseSelector(variant="code", maximize=True, random_state=0)
+
+    result = run_prequential(selector, stream, n_warmstart=4)
+
+    assert result.steps["primary"].tolist() == ["b", "a"]
+    assert result.steps["user_cost"].tolist() == [9.0, 9.0]
+    assert result.summary()["closed_gap"] == 1.0
+
+
 def test_invalid_configuration() -> None:
     with pytest.raises(ValueError):
         OnlinePairwiseSelector(n_additional=0)

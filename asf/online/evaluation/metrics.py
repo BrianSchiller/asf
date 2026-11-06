@@ -12,12 +12,19 @@ def penalised_runtime(runtime: float, cutoff: float, par_factor: float = 10.0) -
     return float(runtime) if runtime <= cutoff else float(cutoff * par_factor)
 
 
-def closed_gap(selector_cost: float, sbs_cost: float, vbs_cost: float) -> float:
-    """Fraction of the SBS-VBS gap closed (1 = VBS, 0 = SBS, <0 worse than SBS)."""
-    gap = sbs_cost - vbs_cost
+def closed_gap(
+    selector_cost: float,
+    sbs_cost: float,
+    vbs_cost: float,
+    maximize: bool = False,
+) -> float:
+    """Fraction of the SBS-VBS gap closed (1 = VBS, 0 = SBS).
+    """
+    gap = vbs_cost - sbs_cost if maximize else sbs_cost - vbs_cost
     if gap <= 0:
         return float("nan")
-    return float((sbs_cost - selector_cost) / gap)
+    improvement = selector_cost - sbs_cost if maximize else sbs_cost - selector_cost
+    return float(improvement / gap)
 
 
 def detection_metrics(
