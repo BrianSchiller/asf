@@ -37,8 +37,16 @@ first algorithm) or `"best_of_scheduled"` (parallel runs, best result wins).
 ## Selectors
 
 * `StaticOnlineSelector`: any offline ASF selector, never updated (lower bound).
-* `OnlinePairwiseSelector`: partial one-vs-one selector trained from parallel
-  runs, after Rook et al. (FOGA 2025).
+* `OnlinePairwiseSelector`: partial one-vs-one selector with selectable
+  `variant="paper"` and `variant="jeroen_code"` implementations.
+
+The paper variant supports `additional_strategy="uniform"` or
+`"error_guided"` (sampling inversely to estimated pairwise accuracy). The
+Jeroen-code variant supports `"least_observed"` or `"cost_based"` (weights
+`1 +` in-sample F1 error). The latter follows the code's maximizing-quality
+assumption, so configure it with `maximize=True`. ASF estimates the paper
+variant's pairwise accuracy with cross-validation; the paper's accuracy
+weighting does not specify this estimation procedure.
 
 ## Drift detectors
 
