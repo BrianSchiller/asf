@@ -39,6 +39,9 @@ class InstanceStream:
         metrics).
     name : str, default="stream"
         Label used in result tables.
+    transition_intervals : tuple[tuple[int, int], ...], default=()
+        Half-open intervals [start, end) of gradual feature shifts. Sudden
+        changes have points but no intervals.
     """
 
     features: pd.DataFrame
@@ -46,6 +49,7 @@ class InstanceStream:
     cutoff: float
     drift_points: tuple[int, ...] = field(default_factory=tuple)
     name: str = "stream"
+    transition_intervals: tuple[tuple[int, int], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.features.index.equals(self.performance.index):
@@ -66,11 +70,23 @@ class InstanceStream:
         """Split into a warm-start prefix and the remaining stream (0 = cold start)."""
         if not 0 <= n_warmstart < len(self):
             raise ValueError("n_warmstart must be in [0, len(stream)).")
+        head_intervals = tuple(
+            (start, min(end, n_warmstart))
+            for start, end in self.transition_intervals
+            if start < n_warmstart and end > 0
+        )
+        tail_intervals = tuple(
+            (max(0, start - n_warmstart), end - n_warmstart)
+            for start, end in self.transition_intervals
+            if end > n_warmstart and start < len(self)
+        )
         head = InstanceStream(
             self.features.iloc[:n_warmstart],
             self.performance.iloc[:n_warmstart],
             self.cutoff,
+            drift_points=tuple(p for p in self.drift_points if p < n_warmstart),
             name=f"{self.name}[warmstart]",
+            transition_intervals=head_intervals,
         )
         tail = InstanceStream(
             self.features.iloc[n_warmstart:],
@@ -78,5 +94,6 @@ class InstanceStream:
             self.cutoff,
             tuple(p - n_warmstart for p in self.drift_points if p >= n_warmstart),
             name=self.name,
+            transition_intervals=tail_intervals,
         )
         return head, tail

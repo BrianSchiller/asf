@@ -65,3 +65,5 @@ are not detected. `reference_errors="cross_validated"` gives more honest
 thresholds than NannyML's in-sample errors when the reference set is small.
 
 See `examples/online/` for runnable examples.
+See [Synthetic streams](synthetic_streams.md) to configure stationary, sudden,
+gradual and recurring covariate shifts for selector experiments.

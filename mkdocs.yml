@@ -38,6 +38,8 @@ nav:
     # - Algorithm Features: features/algorithm_features.md
     - Performance Prediction: features/performance_prediction.md
     - CLI: features/cli.md
+    - Online Selection: features/online_selection.md
+    - Synthetic Streams: features/synthetic_streams.md
   - API Reference:
       - Performance Prediction: api/epm.md
       - Metrics: api/metrics.md

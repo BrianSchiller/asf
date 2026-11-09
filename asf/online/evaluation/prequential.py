@@ -37,6 +37,10 @@ class OnlineResult:
         Total wall-clock time the selector spent retraining.
     drift_points : tuple[int, ...]
         Injected drift points of the stream (ground truth).
+    transition_intervals : tuple[tuple[int, int], ...]
+        Half-open gradual-shift intervals in the evaluated part of the stream.
+        Point-based detection metrics measure delay from onset, not from the
+        completion of a gradual change.
     maximize : bool
     """
 
@@ -46,6 +50,7 @@ class OnlineResult:
     retrain_seconds: float
     drift_points: tuple[int, ...]
     maximize: bool = False
+    transition_intervals: tuple[tuple[int, int], ...] = ()
 
     def summary(self, detection_tolerance: int = 100) -> dict[str, float]:
         """Aggregate numbers for result tables."""
@@ -219,4 +224,5 @@ def run_prequential(
         retrain_seconds=selector.retrain_seconds,
         drift_points=tail.drift_points,
         maximize=maximize,
+        transition_intervals=tail.transition_intervals,
     )

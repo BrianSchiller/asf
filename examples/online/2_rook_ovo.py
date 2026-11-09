@@ -1,35 +1,23 @@
-"""
-Online pairwise (one-vs-one) selector in the style of Rook et al. (FOGA 2025).
+"""Online pairwise learning under recurring covariate shift.
 
-Cold start: no prior performance data. The selector runs random algorithm
-pairs during a reference period, then trains one binary classifier per pair
-from the parallel runs. The stream shifts into a new region of feature space
-halfway through; periodic retraining (on the full history) adapts to it. A
-drift detector can be passed via ``detector=`` instead (see ``asf.online.drift``).
+This cold-start example compares a frozen pairwise selector with periodic
+retraining. Feature distributions alternate A-B-A while the algorithm runtime
+model remains identical at every point. Each proposal runs two algorithms;
+user cost and total compute cost must both be considered.
 """
-
-import numpy as np
-import pandas as pd
 
 from asf.online.evaluation import run_prequential
 from asf.online.retraining import PeriodicRetrain
 from asf.online.selectors import OnlinePairwiseSelector
-from asf.online.streams import InstanceStream
+from asf.online.streams import make_synthetic_scenario
 
-rng = np.random.default_rng(0)
-n_before, n_after = 300, 300
-f0 = np.concatenate([rng.normal(0, 1, n_before), rng.normal(8, 1, n_after)])
-features = np.column_stack([f0, rng.normal(size=f0.size)])
-# region 1: "a" is best, region 2: "b" is best, "c" is mediocre everywhere
-runtimes = np.where(
-    (np.arange(f0.size) < n_before)[:, None], [[5.0, 50.0, 20.0]], [[50.0, 5.0, 20.0]]
-)
-index = pd.Index([f"inst_{i}" for i in range(f0.size)])
-stream = InstanceStream(
-    pd.DataFrame(features, index=index, columns=["f0", "f1"]),
-    pd.DataFrame(runtimes, index=index, columns=["a", "b", "c"]),
-    cutoff=1000.0,
-    drift_points=(n_before,),
+stream = make_synthetic_scenario(
+    "recurring_covariate",
+    n_instances=600,
+    breakpoints=[300, 450],
+    n_features=3,
+    n_algorithms=3,
+    random_state=0,
 )
 
 for name, policy in [
@@ -41,7 +29,8 @@ for name, policy in [
     )
     summary = run_prequential(selector, stream).summary()
     print(
-        f"{name:>18}: user cost {summary['mean_user_cost']:6.2f} "
+        f"{name:>18}: user cost {summary['mean_user_cost']:6.2f}, "
+        f"compute cost {summary['mean_compute_cost']:6.2f} "
         f"(SBS {summary['sbs_cost']:.1f}, VBS {summary['vbs_cost']:.1f}), "
         f"closed gap {summary['closed_gap']:.2f}, "
         f"retrains {int(summary['n_retrains'])}, "
