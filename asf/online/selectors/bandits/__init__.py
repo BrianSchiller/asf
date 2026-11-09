@@ -12,6 +12,12 @@ compositions, e.g.::
     LinTSSelector(confidence=GaussianConfidence())              # fixed confidence
     LinTSSelector(weighting=ConfidenceWeighting(model))         # re-estimated
 
+Non-stationary UCB presets: :class:`DiscountedUCBSelector` (DS-UCB) and
+:class:`SlidingWindowUCBSelector` (SW-UCB). Non-stationary TS presets:
+:class:`DiscountedTSSelector` (DS-TS),
+:class:`SlidingWindowTSSelector` (SW-TS) and :class:`FDSWTSSelector`
+(f-dsw TS, two traces per arm combined by ``aggregate``).
+
 Planned extensions: online-clustering / dyadic-tree ``Partitioner`` (DTS-OC),
 flow-based ``ConfidenceModel`` and Normal-Inverse-Gamma ``Posterior`` (FC-TS),
 censored-runtime imputation via ``_rewards`` (Tornede et al.).
@@ -29,18 +35,28 @@ from asf.online.selectors.bandits.policies import (
 )
 from asf.online.selectors.bandits.posteriors import (
     BayesianLinearRegression,
+    BetaPosterior,
     GaussianPosterior,
     Posterior,
 )
 from asf.online.selectors.bandits.rewards import RewardTransform
 from asf.online.selectors.bandits.thompson import (
+    DiscountedTSSelector,
+    FDSWTSSelector,
     LinTSSelector,
+    SlidingWindowTSSelector,
     ThompsonSamplingSelector,
 )
-from asf.online.selectors.bandits.ucb import LinUCBSelector, UCBSelector
+from asf.online.selectors.bandits.ucb import (
+    DiscountedUCBSelector,
+    LinUCBSelector,
+    SlidingWindowUCBSelector,
+    UCBSelector,
+)
 from asf.online.selectors.bandits.weighting import (
     ConfidenceWeighting,
     ExponentialDiscount,
+    LastPulls,
     NearestNeighbours,
     ProductWeighting,
     SlidingWindow,
@@ -54,9 +70,15 @@ __all__ = [
     "LinUCBSelector",
     "ThompsonSamplingSelector",
     "LinTSSelector",
+    "DiscountedTSSelector",
+    "SlidingWindowTSSelector",
+    "FDSWTSSelector",
+    "DiscountedUCBSelector",
+    "SlidingWindowUCBSelector",
     "Posterior",
     "GaussianPosterior",
     "BayesianLinearRegression",
+    "BetaPosterior",
     "ExplorationPolicy",
     "UCBPolicy",
     "ThompsonPolicy",
@@ -64,6 +86,7 @@ __all__ = [
     "Uniform",
     "ExponentialDiscount",
     "SlidingWindow",
+    "LastPulls",
     "NearestNeighbours",
     "ConfidenceWeighting",
     "ProductWeighting",

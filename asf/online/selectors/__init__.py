@@ -1,6 +1,11 @@
 from asf.online.selectors.bandits import (
+    DiscountedTSSelector,
+    DiscountedUCBSelector,
+    FDSWTSSelector,
     LinTSSelector,
     LinUCBSelector,
+    SlidingWindowTSSelector,
+    SlidingWindowUCBSelector,
     ThompsonSamplingSelector,
     UCBSelector,
 )
@@ -16,4 +21,9 @@ __all__ = [
     "ThompsonSamplingSelector",
     "LinUCBSelector",
     "LinTSSelector",
+    "DiscountedTSSelector",
+    "SlidingWindowTSSelector",
+    "FDSWTSSelector",
+    "DiscountedUCBSelector",
+    "SlidingWindowUCBSelector",
 ]

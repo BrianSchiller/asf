@@ -20,13 +20,16 @@ class RewardTransform:
           Matches PAR-k scoring, but runs well below the cutoff all get a
           reward close to 0, so the bandit mostly learns "solved or not".
           Needs a finite cutoff.
+        * ``"unit"``: ``1 - log10(PAR_k + 1) / log10(k * cutoff + 1)``, the
+          log reward rescaled to ``[0, 1]`` (1 = instant, 0 = unsolved), for
+          Beta posteriors. Needs a finite cutoff.
         * ``"raw"``: the value itself when maximizing, its negation otherwise.
         * ``"auto"``: ``"raw"`` when maximizing, ``"log"`` otherwise.
     par_factor : float, default=10.0
         Penalty factor ``k`` for unsolved runs.
     """
 
-    KINDS = ("auto", "par", "log", "raw")
+    KINDS = ("auto", "par", "log", "unit", "raw")
 
     def __init__(self, kind: str = "auto", par_factor: float = 10.0) -> None:
         if kind not in self.KINDS:
@@ -54,8 +57,11 @@ class RewardTransform:
             return {a: sign * float(v) for a, v in runtimes.items()}
         if maximize:
             raise ValueError(f"Reward kind {kind!r} is for runtime minimization.")
-        if kind == "par" and not math.isfinite(cutoff):
-            raise ValueError("Reward kind 'par' needs a finite cutoff.")
+        if kind in ("par", "unit") and not math.isfinite(cutoff):
+            raise ValueError(
+                f"Reward kind {kind!r} needs a finite cutoff "
+                "(pass budget=<cutoff> to the selector for the warm start)."
+            )
 
         def penalised(algo: str, value: float) -> float:
             unsolved = algo in censored or value >= cutoff
@@ -66,6 +72,9 @@ class RewardTransform:
             p = penalised(algo, value)
             if kind == "par":
                 out[algo] = -p / (self.par_factor * cutoff)
+            elif kind == "unit":
+                worst = math.log10(self.par_factor * cutoff + 1.0)
+                out[algo] = 1.0 - math.log10(p + 1.0) / worst
             else:
                 out[algo] = -math.log10(p + 1.0)
         return out

@@ -14,7 +14,10 @@ from asf.online.selectors.bandits import (
     AbstractContextualBandit,
     BayesianLinearRegression,
     ConfidenceWeighting,
+    DiscountedTSSelector,
+    DiscountedUCBSelector,
     ExponentialDiscount,
+    FDSWTSSelector,
     GaussianConfidence,
     GaussianPosterior,
     LinTSSelector,
@@ -22,6 +25,8 @@ from asf.online.selectors.bandits import (
     NearestNeighbours,
     RewardTransform,
     SlidingWindow,
+    SlidingWindowTSSelector,
+    SlidingWindowUCBSelector,
     ThompsonPolicy,
     ThompsonSamplingSelector,
     UCBSelector,
@@ -32,7 +37,17 @@ from asf.online.streams.stream import InstanceStream
 
 ALGOS = ["a", "b", "c"]
 CUTOFF = 1000.0
-SELECTORS = [UCBSelector, ThompsonSamplingSelector, LinUCBSelector, LinTSSelector]
+SELECTORS = [
+    UCBSelector,
+    ThompsonSamplingSelector,
+    LinUCBSelector,
+    LinTSSelector,
+    DiscountedTSSelector,
+    SlidingWindowTSSelector,
+    FDSWTSSelector,
+    DiscountedUCBSelector,
+    SlidingWindowUCBSelector,
+]
 
 
 # ---------------------------------------------------------------- helpers
@@ -389,3 +404,89 @@ def test_maximize_mode_uses_raw_quality() -> None:
     sel = ThompsonSamplingSelector(maximize=True, noise_var=0.05, random_state=0)
     res = run_prequential(sel, stream, n_warmstart=10)
     assert (res.steps["primary"].tail(50) == "a").mean() > 0.9
+
+
+# ---------------------------------------------------------------- DS-TS, SW-TS, f-dsw
+def _scripted(sel: AbstractContextualBandit, n: int = 60) -> AbstractContextualBandit:
+    """Cold start, then ``n`` observations of randomly chosen arms."""
+    stream = region_stream(n=n)
+    sel.fit(stream.features.iloc[:0], stream.performance.iloc[:0])
+    rng = np.random.default_rng(0)
+    for i in range(n):
+        sel.observe(_obs(stream, i, [str(rng.choice(ALGOS))]))
+    return sel
+
+
+def test_ds_ts_and_sw_ts_match_paper_formulas() -> None:
+    gamma, tau, sigma2 = 0.9, 20, 0.5
+    for sel, paper_weights in [
+        # DS-TS: N = sum_j gamma^(t-j); round j = step + 1, t = clock + 1
+        (
+            DiscountedTSSelector(gamma, sigma2, budget=CUTOFF),
+            lambda s, t: gamma ** (t - s),
+        ),
+        # SW-TS: only the last tau steps
+        (
+            SlidingWindowTSSelector(tau, sigma2, budget=CUTOFF),
+            lambda s, t: (t - s <= tau) * 1.0,
+        ),
+    ]:
+        _scripted(sel)
+        data = sel.history_.get("a")
+        w = paper_weights(data.steps, sel.clock_)
+        post = sel._posterior_for("a", np.zeros(2), 0)
+        assert post.mean() == pytest.approx(w @ data.rewards / w.sum())
+        assert post.width() ** 2 == pytest.approx(sigma2 / w.sum())
+
+
+def test_fdsw_traces() -> None:
+    sel = _scripted(FDSWTSSelector(gamma=0.9, window=5, budget=CUTOFF))
+    data = sel.history_.get("a")
+    hist = sel._posterior_for("a", np.zeros(2), 0, "historic")
+    hot = sel._posterior_for("a", np.zeros(2), 0, "hot")
+    discount = 0.9 ** (sel.clock_ - 1 - data.steps)
+    assert hist.alpha == pytest.approx(discount @ data.rewards)
+    assert hot.alpha == pytest.approx(data.rewards[-5:].sum())
+    assert hot.alpha + hot.beta == pytest.approx(5)
+    unit = RewardTransform("unit")({"a": 0.0, "b": 5.0}, {"b"}, 5.0, False)
+    assert unit == {"a": 1.0, "b": 0.0}
+    with pytest.raises(ValueError):
+        ThompsonSamplingSelector(weighting=Uniform(), traces={"x": Uniform()})
+
+
+def test_non_stationary_ts_presets_switch_arm_after_drift() -> None:
+    stream = abrupt_drift_stream()
+    for sel in (
+        DiscountedTSSelector(0.99, noise_var=0.05, budget=CUTOFF, random_state=0),
+        SlidingWindowTSSelector(100, noise_var=0.05, budget=CUTOFF, random_state=0),
+        FDSWTSSelector(budget=CUTOFF, random_state=0),
+    ):
+        steps = _tail(sel, stream, 20, 300)
+        assert (steps["primary"] == "b").mean() > 0.5, type(sel).__name__
+
+
+def test_ds_ucb_and_sw_ucb_match_paper_indices() -> None:
+    gamma, tau, xi = 0.9, 20, 0.6
+    ds = _scripted(DiscountedUCBSelector(gamma, xi=xi, budget=CUTOFF))
+    sw = _scripted(SlidingWindowUCBSelector(tau, xi=xi, budget=CUTOFF))
+    for sel, weights, bonus in [
+        (
+            ds,
+            lambda s, t: gamma ** (t - s),
+            lambda n, N: 2 * np.sqrt(xi * np.log(n) / N),
+        ),
+        (
+            sw,
+            lambda s, t: (t - s <= tau) * 1.0,
+            lambda n, N: np.sqrt(xi * np.log(min(sel.clock_ + 1, tau)) / N),
+        ),
+    ]:
+        data = {a: sel.history_.get(a) for a in ALGOS}
+        N = {a: weights(d.steps, sel.clock_).sum() for a, d in data.items()}
+        n = sum(N.values())
+        d, w = data["a"], weights(data["a"].steps, sel.clock_)
+        expected = w @ d.rewards / N["a"] + bonus(n, N["a"])
+        z = np.zeros(2)
+        t = sel._policy_time(z, 0)
+        got = sel.policy.score(sel._posterior_for("a", z, 0), np.ones(1), t, sel.rng_)
+        assert got == pytest.approx(expected)

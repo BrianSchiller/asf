@@ -18,8 +18,7 @@ def closed_gap(
     vbs_cost: float,
     maximize: bool = False,
 ) -> float:
-    """Fraction of the SBS-VBS gap closed (1 = VBS, 0 = SBS).
-    """
+    """Fraction of the SBS-VBS gap closed (1 = VBS, 0 = SBS)."""
     gap = vbs_cost - sbs_cost if maximize else sbs_cost - vbs_cost
     if gap <= 0:
         return float("nan")

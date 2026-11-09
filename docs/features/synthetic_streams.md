@@ -22,8 +22,8 @@ stream = make_synthetic_scenario(
     transition_length=60,
     random_state=42,
 )
-print(stream.drift_points)          # zero-based onsets
-print(stream.transition_intervals) # half-open [start, end) intervals
+print(stream.drift_points)  # zero-based onsets
+print(stream.transition_intervals)  # half-open [start, end) intervals
 ```
 
 Presets are `"stationary"` (no change), `"sudden_covariate"`,
@@ -107,7 +107,7 @@ loading[:, -2:] = 0.0  # last two features carry no latent structure
 
 mean_a = np.zeros(n_features)
 mean_b = np.zeros(n_features)
-mean_b[-1] = 3.0       # shift outside the retained reference subspace
+mean_b[-1] = 3.0  # shift outside the retained reference subspace
 ```
 
 This remains a covariate shift: the shift direction is one of the observed

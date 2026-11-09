@@ -12,6 +12,11 @@ learns only from that run.
 | `ThompsonSamplingSelector` | none | Gaussian Thompson Sampling |
 | `LinUCBSelector` | linear in the features | LinUCB (disjoint models) |
 | `LinTSSelector` | linear in the features | Linear Thompson Sampling |
+| `DiscountedUCBSelector` | none | DS-UCB: UCB on discounted counts |
+| `SlidingWindowUCBSelector` | none | SW-UCB: UCB over the last `window` steps |
+| `DiscountedTSSelector` | none | DS-TS: Gaussian TS, discounted by `gamma` |
+| `SlidingWindowTSSelector` | none | SW-TS: Gaussian TS over the last `window` steps |
+| `FDSWTSSelector` | none | f-dsw TS: Beta TS, discounted trace + per-arm window, combined by `aggregate` |
 
 ```python
 from asf.online.evaluation import run_prequential
@@ -22,7 +27,7 @@ result = run_prequential(selector, stream, n_warmstart=50)
 ```
 
 Always pass `budget=<cutoff>`: the warm start is scored before the stream's
-cutoff is known. `examples/online/3_bandits.py` compares all four.
+cutoff is known. `examples/online/3_bandits.py` compares all nine.
 
 ## Building blocks
 
@@ -31,12 +36,13 @@ be swapped independently:
 
 | Part | Default | Alternatives |
 |---|---|---|
-| `posterior` (per-arm reward model) | `GaussianPosterior` / `BayesianLinearRegression` | your own `Posterior` subclass |
+| `posterior` (per-arm reward model) | `GaussianPosterior` / `BayesianLinearRegression` | `BetaPosterior`, your own `Posterior` subclass |
 | `policy` | `UCBPolicy` / `ThompsonPolicy` | your own `ExplorationPolicy` |
-| `weighting` (which past observations count) | `Uniform` | `ExponentialDiscount`, `SlidingWindow`, `NearestNeighbours`, `ConfidenceWeighting`, combined with `*` |
+| `weighting` (which past observations count) | `Uniform` | `ExponentialDiscount`, `SlidingWindow`, `LastPulls`, `NearestNeighbours`, `ConfidenceWeighting`, combined with `*` |
+| `traces` + `aggregate` (several weightings, scores combined per arm) | one trace | e.g. `{"historic": ExponentialDiscount(0.99), "hot": LastPulls(30)}` with `"mean"` / `"min"` / `"max"` |
 | `partitioner` (separate models per region) | `SinglePartition` | your own `Partitioner` (clusters, trees) |
 | `confidence` (weight fixed when an observation arrives) | none | `GaussianConfidence`, your own `ConfidenceModel` |
-| `reward` | `RewardTransform("auto")`: `-log10(PAR10 + 1)` | `"par"`, `"raw"` |
+| `reward` | `RewardTransform("auto")`: `-log10(PAR10 + 1)` | `"unit"` (the same in `[0, 1]`, for Beta posteriors), `"par"`, `"raw"` |
 
 Non-stationary variants are compositions, not new classes:
 
@@ -44,12 +50,12 @@ Non-stationary variants are compositions, not new classes:
 from asf.online.selectors.bandits import ExponentialDiscount, NearestNeighbours
 
 LinTSSelector(weighting=ExponentialDiscount(0.99))  # discounted LinTS
-ThompsonSamplingSelector(                           # discounted kNN window
+ThompsonSamplingSelector(  # discounted kNN window
     weighting=ExponentialDiscount(0.99) * NearestNeighbours(10)
 )
 ```
 
-When the weighting is uniform or an exponential discount, each arm's
+When a trace's weighting is uniform or an exponential discount, each arm's
 posterior is updated incrementally. Otherwise it is refitted from the stored
 history at every decision. Both give the same result where both apply.
 

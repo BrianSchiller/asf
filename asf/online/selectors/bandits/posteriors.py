@@ -221,3 +221,75 @@ class GaussianPosterior(Posterior):
         if self.precision <= 0:
             return float("inf")
         return float(np.sqrt(self.noise_var / self.precision))
+
+
+class BetaPosterior(Posterior):
+    """
+    Beta-Bernoulli posterior for rewards in ``[0, 1]`` (context-free).
+
+    Rewards are counted fractionally: ``alpha += w * r``, ``beta += w * (1 - r)``.
+    The posterior is ``Beta(prior_alpha + alpha, prior_beta + beta)``; with the
+    default uniform prior this is the ``Beta(alpha + 1, beta + 1)`` of f-dsw TS.
+    ``decay`` discounts the counts but not the prior.
+
+    Parameters
+    ----------
+    dim : int
+        Ignored (the input is always ``[1]``).
+    prior_alpha, prior_beta : float, default=1.0
+        Pseudo-counts of the prior (must be > 0).
+    """
+
+    def __init__(
+        self, dim: int = 1, prior_alpha: float = 1.0, prior_beta: float = 1.0
+    ) -> None:
+        super().__init__(dim)
+        if prior_alpha <= 0 or prior_beta <= 0:
+            raise ValueError("prior_alpha and prior_beta must be > 0.")
+        self.prior_alpha = float(prior_alpha)
+        self.prior_beta = float(prior_beta)
+        self.reset()
+
+    def reset(self) -> None:
+        self.alpha = 0.0
+        self.beta = 0.0
+
+    @staticmethod
+    def _check(rewards: np.ndarray | float) -> None:
+        r = np.asarray(rewards, dtype=float)
+        if np.any((r < 0) | (r > 1)):
+            raise ValueError(
+                "BetaPosterior needs rewards in [0, 1] (use RewardTransform('unit'))."
+            )
+
+    def update(self, x: np.ndarray, reward: float, weight: float = 1.0) -> None:
+        self._check(reward)
+        self.alpha += weight * reward
+        self.beta += weight * (1.0 - reward)
+
+    def decay(self, gamma: float) -> None:
+        self.alpha *= gamma
+        self.beta *= gamma
+
+    def fit(self, X: np.ndarray, rewards: np.ndarray, weights: np.ndarray) -> None:
+        r, w = np.asarray(rewards, dtype=float), np.asarray(weights, dtype=float)
+        self._check(r)
+        self.alpha = float(w @ r)
+        self.beta = float(w @ (1.0 - r))
+
+    def _params(self) -> tuple[float, float]:
+        return self.alpha + self.prior_alpha, self.beta + self.prior_beta
+
+    def mean(self, x: np.ndarray | None = None) -> float:
+        a, b = self._params()
+        return a / (a + b)
+
+    def width(self, x: np.ndarray | None = None) -> float:
+        a, b = self._params()
+        return float(np.sqrt(a * b / ((a + b) ** 2 * (a + b + 1))))
+
+    def sample(
+        self, x: np.ndarray, rng: np.random.Generator, scale: float = 1.0
+    ) -> float:
+        """Draw from the Beta posterior (``scale`` is not used)."""
+        return float(rng.beta(*self._params()))

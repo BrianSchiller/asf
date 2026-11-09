@@ -18,7 +18,7 @@ class ExplorationPolicy(ABC):
 
     @abstractmethod
     def score(
-        self, posterior: Posterior, x: np.ndarray, t: int, rng: np.random.Generator
+        self, posterior: Posterior, x: np.ndarray, t: float, rng: np.random.Generator
     ) -> float:
         """
         Score one arm.
@@ -30,7 +30,7 @@ class ExplorationPolicy(ABC):
         x : np.ndarray
             Model input of the current instance.
         t : int
-            Number of observations so far (the bandit's clock).
+            Time index (by default the number of observations so far).
         rng : np.random.Generator
             Source of randomness.
         """
@@ -58,7 +58,7 @@ class UCBPolicy(ExplorationPolicy):
         self.ucb1 = bool(ucb1)
 
     def score(
-        self, posterior: Posterior, x: np.ndarray, t: int, rng: np.random.Generator
+        self, posterior: Posterior, x: np.ndarray, t: float, rng: np.random.Generator
     ) -> float:
         width = posterior.width(x)
         if not np.isfinite(width):
@@ -86,6 +86,6 @@ class ThompsonPolicy(ExplorationPolicy):
         self.scale = float(scale)
 
     def score(
-        self, posterior: Posterior, x: np.ndarray, t: int, rng: np.random.Generator
+        self, posterior: Posterior, x: np.ndarray, t: float, rng: np.random.Generator
     ) -> float:
         return posterior.sample(x, rng, self.scale)

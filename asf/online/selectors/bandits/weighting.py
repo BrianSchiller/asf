@@ -132,6 +132,28 @@ class SlidingWindow(Weighting):
         return ((t - 1 - np.asarray(steps)) < self.size).astype(float)
 
 
+class LastPulls(Weighting):
+    """
+    Only the ``n`` most recent observations *of each arm* count.
+
+    Unlike :class:`SlidingWindow` (last ``size`` global steps), an arm that is
+    rarely played keeps its last ``n`` results however old they are. This is
+    the "hot trace" of f-dsw TS.
+    """
+
+    def __init__(self, n: int) -> None:
+        if n < 1:
+            raise ValueError("n must be >= 1.")
+        self.n = int(n)
+
+    def weights(
+        self, z: np.ndarray, t: int, steps: np.ndarray, Z: np.ndarray
+    ) -> np.ndarray:
+        out = np.zeros(len(steps))
+        out[np.argsort(steps, kind="stable")[-self.n :]] = 1.0
+        return out
+
+
 class NearestNeighbours(Weighting):
     """
     Only the ``k`` stored observations closest to the current instance count.

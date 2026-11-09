@@ -12,11 +12,15 @@ Arms are algorithms. A bandit selector is assembled from independent parts::
 
 UCB, TS, LinUCB and LinTS (``ucb.py``, ``thompson.py``) are presets of this
 class. Non-stationary variants are obtained by passing a different weighting,
-e.g. ``LinTSSelector(weighting=ExponentialDiscount(0.99))``; new methods
+e.g. ``LinTSSelector(weighting=ExponentialDiscount(0.99))``, or several
+weightings at once (``traces``), whose scores are combined per arm (f-dsw TS);
+new methods
 subclass this class and override one of the hooks listed in its docstring.
 
 Computation modes
 -----------------
+Each trace is computed in one of two modes:
+
 * incremental -- if the weighting is incremental (uniform / exponential
   discount), every (cell, arm) keeps a posterior that is updated with each
   observation and decayed once per step.
@@ -31,7 +35,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Callable, Hashable
+from typing import Any, Callable, Hashable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -47,6 +51,14 @@ from asf.online.selectors.bandits.rewards import RewardTransform
 from asf.online.selectors.bandits.weighting import Uniform, Weighting
 
 PosteriorFactory = Callable[[int], Posterior]
+Aggregate = Callable[[Sequence[float]], float]
+
+#: Named ways of combining the scores of several traces.
+AGGREGATES: dict[str, Aggregate] = {
+    "min": lambda v: float(min(v)),
+    "max": lambda v: float(max(v)),
+    "mean": lambda v: float(np.mean(v)),
+}
 
 
 class AbstractContextualBandit(AbstractOnlineSelector):
@@ -65,8 +77,10 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         Observation -> reward per executed arm (e.g. censored imputation).
     ``_observation_weight(z, observation)``
         Weight stored with an observation (default: confidence score or 1).
-    ``_posterior_for(arm, z, cell)``
-        The posterior used to score ``arm`` for the current instance.
+    ``_posterior_for(arm, z, cell, trace)``
+        The posterior used to score ``arm`` in one trace.
+    ``_policy_time(z, cell)``
+        The time ``t`` the policy sees (e.g. a discounted play count).
     ``reset_arms()``
         Forget all observations, e.g. when a drift detector fires.
 
@@ -82,6 +96,13 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         Features are still used by weightings / partitioners either way.
     weighting : Weighting or None, default=None
         Weighting of past observations; ``None`` = ``Uniform()`` (stationary).
+    traces : Mapping[str, Weighting] or None, default=None
+        Several named weightings instead of one, e.g. ``{"historic":
+        ExponentialDiscount(0.99), "hot": LastPulls(30)}``. Every trace has its
+        own posterior per arm; the policy scores each and ``aggregate``
+        combines the scores. Mutually exclusive with ``weighting``.
+    aggregate : {"mean", "min", "max"} or callable, default="mean"
+        How the scores of several traces are combined (unused for one trace).
     partitioner : Partitioner or None, default=None
         ``None`` = ``SinglePartition()`` (one model per arm).
     confidence : ConfidenceModel or None, default=None
@@ -109,6 +130,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         *,
         contextual: bool = True,
         weighting: Weighting | None = None,
+        traces: Mapping[str, Weighting] | None = None,
+        aggregate: str | Aggregate = "mean",
         partitioner: Partitioner | None = None,
         confidence: ConfidenceModel | None = None,
         reward: RewardTransform | None = None,
@@ -120,7 +143,16 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         self.posterior = posterior
         self.policy = policy
         self.contextual = bool(contextual)
-        self.weighting = weighting if weighting is not None else Uniform()
+        if weighting is not None and traces is not None:
+            raise ValueError("Pass either weighting or traces, not both.")
+        if traces is None:
+            traces = {"main": weighting if weighting is not None else Uniform()}
+        if not traces:
+            raise ValueError("traces must not be empty.")
+        if isinstance(aggregate, str) and aggregate not in AGGREGATES:
+            raise ValueError(f"aggregate must be one of {list(AGGREGATES)}.")
+        self.traces = dict(traces)
+        self.aggregate = aggregate
         self.partitioner = partitioner if partitioner is not None else SinglePartition()
         self.confidence = confidence
         self.reward = reward if reward is not None else RewardTransform()
@@ -128,9 +160,16 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         self.max_history = max_history
 
     @property
+    def weighting(self) -> Weighting:
+        """The weighting of a single-trace bandit."""
+        if len(self.traces) != 1:
+            raise AttributeError("This bandit has several traces; use .traces.")
+        return next(iter(self.traces.values()))
+
+    @property
     def incremental(self) -> bool:
-        """Whether posteriors are maintained incrementally (vs. refitted)."""
-        return bool(self.weighting.incremental)
+        """Whether all traces are maintained incrementally (vs. refitted)."""
+        return all(w.incremental for w in self.traces.values())
 
     # ------------------------------------------------------------- warm start
     def _fit_initial(
@@ -141,7 +180,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         self.history_ = BanditHistory(
             self.algorithms, self.context_.dim, self.max_history
         )
-        self.posteriors_: dict[Hashable, dict[str, Posterior]] = {}
+        # (cell, trace) -> arm -> posterior, for incremental traces only
+        self.posteriors_: dict[tuple[Hashable, str], dict[str, Posterior]] = {}
         self.clock_ = 0
         self.rng_ = np.random.default_rng(self.random_state)
         self.last_scores_: dict[str, float] = {}
@@ -152,7 +192,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
             if len(features)
             else np.zeros((0, self.context_.dim))
         )
-        self.weighting.fit(Z)
+        for weighting in self.traces.values():
+            weighting.fit(Z)
         self.partitioner.fit(Z)
         if self.confidence is not None:
             self.confidence.fit(Z)
@@ -172,14 +213,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         z = self._feature_vector(features)
         x = model_input(z, self.contextual)[0]
         cell = self.partitioner.assign(z)
-        scores = np.array(
-            [
-                self.policy.score(
-                    self._posterior_for(arm, z, cell), x, self.clock_, self.rng_
-                )
-                for arm in self.algorithms
-            ]
-        )
+        t = self._policy_time(z, cell)
+        scores = np.array([self._score(arm, z, x, cell, t) for arm in self.algorithms])
         self.last_scores_ = dict(zip(self.algorithms, scores.tolist()))
         best = np.flatnonzero(scores == scores.max())
         arm = self.algorithms[int(self.rng_.choice(best))]
@@ -191,7 +226,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         self._learn(z, rewards, self._observation_weight(z, observation))
         # Let the adaptive components see the new instance (after it was
         # scored, so a confidence weight reflects the model *before* it).
-        self.weighting.update(z, self.clock_)
+        for weighting in self.traces.values():
+            weighting.update(z, self.clock_)
         self.partitioner.update(z)
         if self.confidence is not None:
             self.confidence.update(z)
@@ -225,37 +261,65 @@ class AbstractContextualBandit(AbstractOnlineSelector):
             return 1.0
         return float(self.confidence.score(z[None, :])[0])
 
-    def _posterior_for(self, arm: str, z: np.ndarray, cell: Hashable) -> Posterior:
-        """Posterior of ``arm`` for the current instance (``z`` in ``cell``)."""
-        if self.incremental:
-            return self._cell_posteriors(cell)[arm]
-        data = self.history_.get(arm, cell)
-        weights = data.weights * self.weighting.weights(
-            z, self.clock_, data.steps, data.Z
+    def _policy_time(self, z: np.ndarray, cell: Hashable) -> float:
+        """Time ``t`` passed to the policy (UCB1's ``ln t``); default: the clock."""
+        return float(self.clock_)
+
+    def _score(
+        self, arm: str, z: np.ndarray, x: np.ndarray, cell: Hashable, t: float
+    ) -> float:
+        """Score of ``arm``: one policy score per trace, then aggregated."""
+        values = [
+            self.policy.score(self._posterior_for(arm, z, cell, trace), x, t, self.rng_)
+            for trace in self.traces
+        ]
+        if len(values) == 1:
+            return values[0]
+        combine = (
+            AGGREGATES[self.aggregate]
+            if isinstance(self.aggregate, str)
+            else self.aggregate
         )
+        return combine(values)
+
+    def _posterior_for(
+        self, arm: str, z: np.ndarray, cell: Hashable, trace: str | None = None
+    ) -> Posterior:
+        """Posterior of ``arm`` in ``trace`` (default: the first) for the
+        current instance (``z`` in ``cell``)."""
+        trace = trace if trace is not None else next(iter(self.traces))
+        weighting = self.traces[trace]
+        if weighting.incremental:
+            return self._cell_posteriors(cell, trace)[arm]
+        data = self.history_.get(arm, cell)
+        weights = data.weights * weighting.weights(z, self.clock_, data.steps, data.Z)
         posterior = self.posterior(self.input_dim_)
         posterior.fit(model_input(data.Z, self.contextual), data.rewards, weights)
         return posterior
 
     # ------------------------------------------------------------- internals
-    def _cell_posteriors(self, cell: Hashable) -> dict[str, Posterior]:
-        if cell not in self.posteriors_:
-            self.posteriors_[cell] = {
+    def _cell_posteriors(self, cell: Hashable, trace: str) -> dict[str, Posterior]:
+        key = (cell, trace)
+        if key not in self.posteriors_:
+            self.posteriors_[key] = {
                 arm: self.posterior(self.input_dim_) for arm in self.algorithms
             }
-        return self.posteriors_[cell]
+        return self.posteriors_[key]
 
     def _learn(self, z: np.ndarray, rewards: dict[str, float], weight: float) -> None:
         """Store one instance's rewards and advance the clock by one."""
         cell = self.partitioner.assign(z)
-        if self.incremental:
-            gamma = self.weighting.decay_factor
+        x = model_input(z, self.contextual)[0]
+        for trace, weighting in self.traces.items():
+            if not weighting.incremental:
+                continue  # refitted from the history when needed
+            gamma = weighting.decay_factor
             if gamma != 1.0:
-                for models in self.posteriors_.values():
-                    for posterior in models.values():
-                        posterior.decay(gamma)
-            x = model_input(z, self.contextual)[0]
-            models = self._cell_posteriors(cell)
+                for (_, t), models in self.posteriors_.items():
+                    if t == trace:
+                        for posterior in models.values():
+                            posterior.decay(gamma)
+            models = self._cell_posteriors(cell, trace)
             for arm, r in rewards.items():
                 models[arm].update(x, r, weight)
         for arm, r in rewards.items():

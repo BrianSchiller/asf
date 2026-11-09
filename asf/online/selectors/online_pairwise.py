@@ -200,9 +200,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         m = len(self.algorithms)
         if self._reference_remaining > 0:
             if self.variant == "paper":
-                chosen = self._rng.choice(
-                    m, size=1 + self.n_additional, replace=False
-                )
+                chosen = self._rng.choice(m, size=1 + self.n_additional, replace=False)
             else:
                 primary = int(self._rng.integers(m))
                 candidates = np.array([j for j in range(m) if j != primary])
