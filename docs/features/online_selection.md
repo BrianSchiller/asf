@@ -46,6 +46,9 @@ because resource usage cannot be inferred from quality alone.
 * `StaticOnlineSelector`: any offline ASF selector, never updated (lower bound).
 * `OnlinePairwiseSelector`: partial one-vs-one selector with selectable
   `variant="paper"` and `variant="code"` implementations.
+* Bandits (`UCBSelector`, `ThompsonSamplingSelector`, `LinUCBSelector`,
+  `LinTSSelector`) and their non-stationary variants: see
+  [Bandit selectors](bandits.md).
 
 The paper variant supports `additional_strategy="uniform"` or
 `"error_guided"` (sampling inversely to estimated pairwise accuracy). The

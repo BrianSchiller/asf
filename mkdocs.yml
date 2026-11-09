@@ -39,6 +39,7 @@ nav:
     - Performance Prediction: features/performance_prediction.md
     - CLI: features/cli.md
     - Online Selection: features/online_selection.md
+    - Bandit Selectors: features/bandits.md
     - Synthetic Streams: features/synthetic_streams.md
   - API Reference:
       - Performance Prediction: api/epm.md
