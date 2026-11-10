@@ -18,16 +18,22 @@ Non-stationary UCB presets: :class:`DiscountedUCBSelector` (DS-UCB) and
 :class:`SlidingWindowTSSelector` (SW-TS) and :class:`FDSWTSSelector`
 (f-dsw TS, two traces per arm combined by ``aggregate``).
 
-Planned extensions: online-clustering / dyadic-tree ``Partitioner`` (DTS-OC),
-flow-based ``ConfidenceModel`` and Normal-Inverse-Gamma ``Posterior`` (FC-TS),
-censored-runtime imputation via ``_rewards`` (Tornede et al.).
+Clustered: :class:`DTSOCSelector` (DTS-OC, online k-means + discounted Beta TS
+per cluster, fuzzy-penalised updates).
+
+Planned extensions: flow-based ``ConfidenceModel`` and Normal-Inverse-Gamma
+``Posterior`` (FC-TS), censored-runtime imputation via ``_rewards`` (Tornede et al.).
 """
 
 from asf.online.selectors.bandits.base import AbstractContextualBandit
 from asf.online.selectors.bandits.confidence import ConfidenceModel, GaussianConfidence
 from asf.online.selectors.bandits.context import ContextBuilder, model_input
 from asf.online.selectors.bandits.history import ArmData, BanditHistory
-from asf.online.selectors.bandits.partitioning import Partitioner, SinglePartition
+from asf.online.selectors.bandits.partitioning import (
+    OnlineKMeans,
+    Partitioner,
+    SinglePartition,
+)
 from asf.online.selectors.bandits.policies import (
     ExplorationPolicy,
     ThompsonPolicy,
@@ -42,6 +48,7 @@ from asf.online.selectors.bandits.posteriors import (
 from asf.online.selectors.bandits.rewards import RewardTransform
 from asf.online.selectors.bandits.thompson import (
     DiscountedTSSelector,
+    DTSOCSelector,
     FDSWTSSelector,
     LinTSSelector,
     SlidingWindowTSSelector,
@@ -58,6 +65,7 @@ from asf.online.selectors.bandits.weighting import (
     ExponentialDiscount,
     LastPulls,
     NearestNeighbours,
+    PullDiscount,
     ProductWeighting,
     SlidingWindow,
     Uniform,
@@ -75,6 +83,7 @@ __all__ = [
     "FDSWTSSelector",
     "DiscountedUCBSelector",
     "SlidingWindowUCBSelector",
+    "DTSOCSelector",
     "Posterior",
     "GaussianPosterior",
     "BayesianLinearRegression",
@@ -85,6 +94,7 @@ __all__ = [
     "Weighting",
     "Uniform",
     "ExponentialDiscount",
+    "PullDiscount",
     "SlidingWindow",
     "LastPulls",
     "NearestNeighbours",
@@ -94,6 +104,7 @@ __all__ = [
     "GaussianConfidence",
     "Partitioner",
     "SinglePartition",
+    "OnlineKMeans",
     "RewardTransform",
     "ContextBuilder",
     "model_input",

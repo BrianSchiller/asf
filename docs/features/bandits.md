@@ -17,6 +17,7 @@ learns only from that run.
 | `DiscountedTSSelector` | none | DS-TS: Gaussian TS, discounted by `gamma` |
 | `SlidingWindowTSSelector` | none | SW-TS: Gaussian TS over the last `window` steps |
 | `FDSWTSSelector` | none | f-dsw TS: Beta TS, discounted trace + per-arm window, combined by `aggregate` |
+| `DTSOCSelector` | cluster of the instance | DTS-OC: discounted Beta TS per online cluster |
 
 ```python
 from asf.online.evaluation import run_prequential
@@ -27,7 +28,29 @@ result = run_prequential(selector, stream, n_warmstart=50)
 ```
 
 Always pass `budget=<cutoff>`: the warm start is scored before the stream's
-cutoff is known. `examples/online/3_bandits.py` compares all nine.
+cutoff is known. `examples/online/3_bandits.py` compares all of them.
+
+## DTS-OC
+
+`DTSOCSelector` (Dzhoha & Rozora, 2023) clusters instances online and runs a
+separate discounted Thompson Sampling bandit in every cluster:
+
+1. **Cluster:** `OnlineKMeans` assigns the instance to its nearest centroid.
+   Centroids are initialised by k-means on the warm start, or (cold start) by
+   the first `n_clusters` distinct instances. After an instance is observed,
+   its centroid moves with discounted statistics (`cluster_gamma`).
+2. **Select:** one Beta sample per algorithm from the cluster's posteriors.
+3. **Update:** the played algorithm's counts in that cluster are discounted by
+   `gamma` (`PullDiscount`: per pull, not per step) and the new reward is
+   added, scaled by the fuzzy penalty
+   `phi = 1 / sum_y (d_assigned / d_y)^(2 / (l - 1))`, which down-weights
+   instances that lie between clusters.
+
+Deviations from the paper: the centroid moves in `observe` instead of
+`propose`; rewards are the fractional `"unit"` reward (binary: pass
+`reward=RewardTransform("solved")`); `per_step_discount=True` decays every arm
+in every cluster each step instead. With `posterior=partial(BayesianLinearRegression, ...)`
+and `contextual=True` it becomes LinTS per cluster.
 
 ## Building blocks
 
@@ -38,11 +61,11 @@ be swapped independently:
 |---|---|---|
 | `posterior` (per-arm reward model) | `GaussianPosterior` / `BayesianLinearRegression` | `BetaPosterior`, your own `Posterior` subclass |
 | `policy` | `UCBPolicy` / `ThompsonPolicy` | your own `ExplorationPolicy` |
-| `weighting` (which past observations count) | `Uniform` | `ExponentialDiscount`, `SlidingWindow`, `LastPulls`, `NearestNeighbours`, `ConfidenceWeighting`, combined with `*` |
+| `weighting` (which past observations count) | `Uniform` | `ExponentialDiscount`, `PullDiscount`, `SlidingWindow`, `LastPulls`, `NearestNeighbours`, `ConfidenceWeighting`, combined with `*` |
 | `traces` + `aggregate` (several weightings, scores combined per arm) | one trace | e.g. `{"historic": ExponentialDiscount(0.99), "hot": LastPulls(30)}` with `"mean"` / `"min"` / `"max"` |
-| `partitioner` (separate models per region) | `SinglePartition` | your own `Partitioner` (clusters, trees) |
+| `partitioner` (separate models per region) | `SinglePartition` | `OnlineKMeans`, your own `Partitioner` (trees, ...) |
 | `confidence` (weight fixed when an observation arrives) | none | `GaussianConfidence`, your own `ConfidenceModel` |
-| `reward` | `RewardTransform("auto")`: `-log10(PAR10 + 1)` | `"unit"` (the same in `[0, 1]`, for Beta posteriors), `"par"`, `"raw"` |
+| `reward` | `RewardTransform("auto")`: `-log10(PAR10 + 1)` | `"unit"` (the same in `[0, 1]`, for Beta posteriors), `"solved"` (binary), `"par"`, `"raw"` |
 
 Non-stationary variants are compositions, not new classes:
 

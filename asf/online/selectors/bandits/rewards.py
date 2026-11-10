@@ -23,13 +23,14 @@ class RewardTransform:
         * ``"unit"``: ``1 - log10(PAR_k + 1) / log10(k * cutoff + 1)``, the
           log reward rescaled to ``[0, 1]`` (1 = instant, 0 = unsolved), for
           Beta posteriors. Needs a finite cutoff.
+        * ``"solved"``: 1 if solved within the cutoff, else 0 (binary).
         * ``"raw"``: the value itself when maximizing, its negation otherwise.
         * ``"auto"``: ``"raw"`` when maximizing, ``"log"`` otherwise.
     par_factor : float, default=10.0
         Penalty factor ``k`` for unsolved runs.
     """
 
-    KINDS = ("auto", "par", "log", "unit", "raw")
+    KINDS = ("auto", "par", "log", "unit", "solved", "raw")
 
     def __init__(self, kind: str = "auto", par_factor: float = 10.0) -> None:
         if kind not in self.KINDS:
@@ -70,7 +71,9 @@ class RewardTransform:
         out: dict[str, float] = {}
         for algo, value in runtimes.items():
             p = penalised(algo, value)
-            if kind == "par":
+            if kind == "solved":
+                out[algo] = 0.0 if algo in censored or value >= cutoff else 1.0
+            elif kind == "par":
                 out[algo] = -p / (self.par_factor * cutoff)
             elif kind == "unit":
                 worst = math.log10(self.par_factor * cutoff + 1.0)

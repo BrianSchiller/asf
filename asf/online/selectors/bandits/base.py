@@ -314,12 +314,15 @@ class AbstractContextualBandit(AbstractOnlineSelector):
             if not weighting.incremental:
                 continue  # refitted from the history when needed
             gamma = weighting.decay_factor
-            if gamma != 1.0:
-                for (_, t), models in self.posteriors_.items():
-                    if t == trace:
-                        for posterior in models.values():
-                            posterior.decay(gamma)
             models = self._cell_posteriors(cell, trace)
+            if gamma != 1.0 and weighting.decay_on_update:
+                for arm in rewards:  # per pull: only what is updated now
+                    models[arm].decay(gamma)
+            elif gamma != 1.0:
+                for (_, t), cell_models in self.posteriors_.items():
+                    if t == trace:  # per step: every arm in every cell
+                        for posterior in cell_models.values():
+                            posterior.decay(gamma)
             for arm, r in rewards.items():
                 models[arm].update(x, r, weight)
         for arm, r in rewards.items():

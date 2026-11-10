@@ -33,6 +33,9 @@ class Weighting(ABC):
 
     #: True if the weights can be maintained with ``Posterior.decay`` alone.
     incremental: bool = False
+    #: Incremental mode: decay only the posteriors being updated (per pull)
+    #: instead of all posteriors every step.
+    decay_on_update: bool = False
 
     @property
     def decay_factor(self) -> float:
@@ -112,6 +115,40 @@ class ExponentialDiscount(Weighting):
         self, z: np.ndarray, t: int, steps: np.ndarray, Z: np.ndarray
     ) -> np.ndarray:
         return self.gamma ** (t - 1 - np.asarray(steps, dtype=float))
+
+
+class PullDiscount(Weighting):
+    """
+    Weight ``gamma ** k``, where ``k`` counts the newer observations of the same
+    arm in the same cell (discount per pull, as in DTS-OC).
+
+    In contrast to :class:`ExponentialDiscount` (discount per step, all arms),
+    an arm that is not played keeps its posterior unchanged.
+
+    Parameters
+    ----------
+    gamma : float
+        Discount per pull, in ``(0, 1]``.
+    """
+
+    incremental = True
+    decay_on_update = True
+
+    def __init__(self, gamma: float) -> None:
+        if not 0 < gamma <= 1:
+            raise ValueError("gamma must be in (0, 1].")
+        self.gamma = float(gamma)
+
+    @property
+    def decay_factor(self) -> float:
+        return self.gamma
+
+    def weights(
+        self, z: np.ndarray, t: int, steps: np.ndarray, Z: np.ndarray
+    ) -> np.ndarray:
+        n = len(steps)
+        newer = n - 1 - np.argsort(np.argsort(steps, kind="stable"), kind="stable")
+        return self.gamma ** newer.astype(float)
 
 
 class SlidingWindow(Weighting):
@@ -230,7 +267,12 @@ class ProductWeighting(Weighting):
 
     @property
     def incremental(self) -> bool:  # type: ignore[override]
-        return all(p.incremental for p in self.parts)
+        scopes = {p.decay_on_update for p in self.parts if p.decay_factor != 1.0}
+        return all(p.incremental for p in self.parts) and len(scopes) <= 1
+
+    @property
+    def decay_on_update(self) -> bool:  # type: ignore[override]
+        return any(p.decay_on_update for p in self.parts)
 
     @property
     def decay_factor(self) -> float:

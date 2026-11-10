@@ -16,6 +16,7 @@ from asf.online.selectors.bandits import (
     ConfidenceWeighting,
     DiscountedTSSelector,
     DiscountedUCBSelector,
+    DTSOCSelector,
     ExponentialDiscount,
     FDSWTSSelector,
     GaussianConfidence,
@@ -23,6 +24,8 @@ from asf.online.selectors.bandits import (
     LinTSSelector,
     LinUCBSelector,
     NearestNeighbours,
+    OnlineKMeans,
+    PullDiscount,
     RewardTransform,
     SlidingWindow,
     SlidingWindowTSSelector,
@@ -47,6 +50,7 @@ SELECTORS = [
     FDSWTSSelector,
     DiscountedUCBSelector,
     SlidingWindowUCBSelector,
+    DTSOCSelector,
 ]
 
 
@@ -200,6 +204,7 @@ def test_basic_weightings() -> None:
         (Uniform, False),
         (lambda: ExponentialDiscount(0.9), False),
         (lambda: ExponentialDiscount(0.95), True),
+        (lambda: PullDiscount(0.9), False),
     ],
 )
 def test_incremental_and_refit_modes_agree(cls, make_weighting, use_confidence) -> None:  # noqa: ANN001
@@ -490,3 +495,40 @@ def test_ds_ucb_and_sw_ucb_match_paper_indices() -> None:
         t = sel._policy_time(z, 0)
         got = sel.policy.score(sel._posterior_for("a", z, 0), np.ones(1), t, sel.rng_)
         assert got == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------- DTS-OC
+def test_online_kmeans_seeding_update_and_membership() -> None:
+    km = OnlineKMeans(2, gamma=0.5, fuzziness=2.0)
+    km.fit(np.zeros((0, 1)))  # cold start: first distinct instances seed
+    assert km.assign(np.array([0.0])) == 0
+    km.update(np.array([0.0]))
+    km.update(np.array([0.0]))  # duplicate: joins cluster 0, opens nothing
+    assert km.assign(np.array([4.0])) == 1
+    km.update(np.array([4.0]))
+    km.update(np.array([2.0]))  # tie -> cluster 0: m = 0.5*0 + 2, w = 0.5*1.5 + 1
+    np.testing.assert_allclose(km.centroids[:, 0], [2 / 1.75, 4.0])
+    # phi = 1 / sum_y (d_a / d_y)^(2 / (l - 1)), l = 2
+    z, d = np.array([3.0]), np.abs(3.0 - km.centroids[:, 0])
+    assert km.membership(z) == pytest.approx(1 / np.sum((d.min() / d) ** 2))
+    assert km.membership(km.centroids[1]) == 1.0
+
+
+def test_dts_oc_matches_paper_recursion() -> None:
+    gamma = 0.8
+    sel = _scripted(DTSOCSelector(n_clusters=3, gamma=gamma, budget=CUTOFF))
+    assert sel.incremental and isinstance(sel.weighting, PullDiscount)
+    for (cell, _), models in sel.posteriors_.items():
+        for arm, post in models.items():
+            d = sel.history_.get(arm, cell)
+            alpha = 0.0  # alpha <- gamma * alpha + phi * r, per pull
+            for r, phi in zip(d.rewards, d.weights):
+                alpha = gamma * alpha + phi * r
+            assert post.alpha == pytest.approx(alpha)
+    assert {c for c, _ in sel.posteriors_} == {0, 1, 2}
+    w = sel.history_.get("a").weights
+    assert np.all((w > 0) & (w <= 1))  # fuzzy penalties
+    assert RewardTransform("solved")({"a": 5.0, "b": 9.0}, {"b"}, 9.0, False) == {
+        "a": 1.0,
+        "b": 0.0,
+    }
