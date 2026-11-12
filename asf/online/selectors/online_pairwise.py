@@ -18,9 +18,16 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold
 from sklearn.tree import DecisionTreeClassifier
 
-from asf.online.base import AbstractOnlineSelector, Observation
-from asf.online.drift.abstract_detector import AbstractDriftDetector, DriftSignal
-from asf.online.retraining.policy import AbstractRetrainPolicy, DriftTriggeredRetrain
+from asf.online.base import AbstractOnlineSelector, DriftResponses, Observation
+from asf.online.drift.abstract_detector import (
+    AbstractDriftDetector,
+    AbstractScalarDriftDetector,
+)
+from asf.online.drift.statistics import AbstractDriftStatistic
+from asf.online.gate import AbstractExtraRunGate
+from asf.online.prediction import PredictionRecord
+from asf.online.retraining.policy import AbstractRetrainPolicy
+from asf.online.retraining.response import RetrainResponse
 from asf.selectors.abstract_model_based_selector import AbstractModelBasedSelector
 
 
@@ -64,9 +71,15 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
       If warm-start data is passed to ``fit`` (an ASF extension that is in
       neither source), training starts from that data and the reference period
       is skipped.
-    * **Retraining.** When the retrain policy fires (by default: whenever the
-      detector signals drift), all classifiers are retrained on the FULL history
-      and the detector is refitted on it as well. Hence ``window_size=None``.
+    * **Retraining.** By default, a drift signal triggers a
+      :class:`~asf.online.retraining.RetrainResponse`: all classifiers are
+      retrained on the FULL history and the detector is refitted on it as
+      well. Hence ``window_size=None``. A ``retrain_policy`` retrains on a
+      schedule instead (drift signals are then only recorded unless a
+      ``drift_response`` is given too).
+    * **Extra runs.** The selector nominates its ``n_additional`` sampled
+      algorithms (``PredictionRecord.candidates``); the default gate runs all
+      of them. A different ``gate`` makes the extra runs conditional.
 
     Parameters
     ----------
@@ -87,13 +100,23 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         ``"code"`` one extra instance is consumed, see above. The code variant
         assumes a maximizing quality measure, as does the original
         implementation.
-    detector : AbstractDriftDetector or None, default=None
-        Drift detector, fitted at the end of the reference period and refitted
-        after every retraining. The original detector only uses features.
+    detector : AbstractDriftDetector, AbstractScalarDriftDetector or None, default=None
+        Drift detector, fitted at the end of the reference period (or right
+        after a warm start) and re-referenced after every retraining. The
+        original detector only uses features.
+    drift_statistic : AbstractDriftStatistic or None, default=None
+        Required with a scalar detector, see
+        :class:`~asf.online.base.AbstractOnlineSelector`.
+    drift_response : AbstractDriftResponse, sequence of them, or None, default=None
+        What to do on a drift signal. ``None`` defaults to
+        ``RetrainResponse()`` if a detector is given and no
+        ``retrain_policy`` is, and to no response otherwise.
     retrain_policy : AbstractRetrainPolicy or None, default=None
-        When to retrain. Defaults to ``DriftTriggeredRetrain`` if a detector is
-        given and to "never retrain" otherwise. The policy receives the number
-        of instances seen INCLUDING the current one.
+        Schedule-based retraining, e.g. ``PeriodicRetrain``. The policy
+        receives the number of stream instances seen INCLUDING the current
+        one (the warm start is not counted).
+    gate : AbstractExtraRunGate or None, default=None
+        Extra-run gate; ``None`` runs all ``n_additional`` nominees.
     error_estimation_folds : int, default=5
         Folds used to estimate pairwise accuracy for paper-variant weights.
         Cross-validation is ASF's estimate because the paper does not specify
@@ -109,6 +132,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
 
     PREFIX = "online_pairwise"
     RESULT_MODE = "best_of_scheduled"
+    MANAGES_DETECTOR_FIT = True
 
     def __init__(
         self,
@@ -120,14 +144,28 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         ]
         | None = None,
         reference_period: int | None = None,
-        detector: AbstractDriftDetector | None = None,
+        detector: AbstractDriftDetector | AbstractScalarDriftDetector | None = None,
         retrain_policy: AbstractRetrainPolicy | None = None,
         error_estimation_folds: int = 5,
         accuracy_floor: float = 1e-3,
         window_size: int | None = None,
+        gate: AbstractExtraRunGate | None = None,
+        drift_statistic: AbstractDriftStatistic | None = None,
+        drift_response: DriftResponses = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(model_class=model_class, window_size=window_size, **kwargs)
+        if drift_response is None and detector is not None and retrain_policy is None:
+            drift_response = RetrainResponse()
+        super().__init__(
+            model_class=model_class,
+            window_size=window_size,
+            gate=gate,
+            detector=detector,
+            drift_statistic=drift_statistic,
+            drift_response=drift_response,
+            retrain_policy=retrain_policy,
+            **kwargs,
+        )
         if variant not in ("paper", "code"):
             raise ValueError(f"Unknown variant: {variant!r}")
         if additional_strategy is None:
@@ -149,12 +187,8 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         self.reference_period = int(
             500 if reference_period is None else reference_period
         )
-        self.detector = detector
         self.error_estimation_folds = int(error_estimation_folds)
         self.accuracy_floor = float(accuracy_floor)
-        if retrain_policy is None and detector is not None:
-            retrain_policy = DriftTriggeredRetrain(detector)
-        self.retrain_policy = retrain_policy
 
         self._rng = np.random.default_rng(self.random_state)
         self._pairs: list[tuple[int, int]] = []
@@ -162,6 +196,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         self.pair_accuracy_: np.ndarray = np.empty((0, 0))
         self.pair_f1_error_: np.ndarray = np.empty((0, 0))
         self._reference_remaining = 0
+        self._adapt_now = False
 
     # ------------------------------------------------------------------ fit
     def _fit_initial(
@@ -191,13 +226,15 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
             self._reference_remaining = self.reference_period + 1
         else:
             self._reference_remaining = self.reference_period
+        self._adapt_now = False
         if self._reference_remaining == 0:
             self._train()
-            self._fit_detector()
+            self.fit_detector()
 
     # -------------------------------------------------------------- online
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
+    def _select(self, features: pd.DataFrame) -> PredictionRecord:
         m = len(self.algorithms)
+        votes: np.ndarray | None = None
         if self._reference_remaining > 0:
             if self.variant == "paper":
                 chosen = self._rng.choice(m, size=1 + self.n_additional, replace=False)
@@ -220,38 +257,42 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
             else:
                 extra = self.alternative_extras(selected, candidates)
             chosen = np.concatenate([[selected], extra])
-        return [(self.algorithms[int(j)], 0.0) for j in chosen]
+        primary = int(chosen[0])
+        return PredictionRecord(
+            chosen=self.algorithms[primary],
+            budget=0.0,
+            score=None if votes is None else float(votes[primary]),
+            scores=(
+                None
+                if votes is None
+                else {a: float(v) for a, v in zip(self.algorithms, votes)}
+            ),
+            candidates=tuple(self.algorithms[int(j)] for j in chosen[1:]),
+        )
 
     def _observe(self, observation: Observation) -> None:
+        self._adapt_now = True
         if self._reference_remaining > 0:
             self._reference_remaining -= 1
             if self._reference_remaining > 0:
+                self._adapt_now = False
                 return
             # End of the reference period: train and fit the detector.
             self._train()
-            self._fit_detector()
+            self.fit_detector()
             if self.variant == "paper":
+                self._adapt_now = False
                 return
             # Code variant: the original continues with ``detect()`` (and the
-            # retrain check) on this very instance, so fall through.
+            # retrain check) on this very instance, so detection runs.
 
-        signal: DriftSignal | None = None
-        if self.detector is not None:
-            signal = self.detector.update(
-                observation.features, self._performance_row(observation)
-            )
-            if signal.drift:
-                self._record_drift()
+    def _adaptation_active(self) -> bool:
+        """No detection or retraining during the reference period."""
+        return self._adapt_now
 
-        policy = self.retrain_policy
-        # Number of instances seen including the current one (buffer is already
-        # updated; step_ is the 0-based index of the current instance).
-        if policy is not None and policy.should_retrain(self.step_ + 1, signal):
-            with self._timed() as timer:
-                self._train()
-                self._fit_detector(refit=True)
-            self._record_retrain(timer.seconds)
-            policy.on_retrained(self.step_ + 1)
+    def _retrain(self) -> None:
+        """Retrain every pair classifier on the full buffer."""
+        self._train()
 
     def _predict(
         self,
@@ -332,20 +373,6 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
                 pred = np.asarray(model.predict(X.iloc[test])).reshape(-1)
             correct += int((pred == y[test]).sum())
         return correct / len(y)
-
-    def _fit_detector(self, refit: bool = False) -> None:
-        """Fit (or, after a retraining, reset) the detector on the full history.
-
-        The original ``DriftManager`` only uses instance features. ``reset``
-        must behave like ``fit`` and leave an empty chunk buffer.
-        """
-        if self.detector is None or self.buffer is None or len(self.buffer) == 0:
-            return
-        X, P = self.buffer.features(), self.buffer.performance()
-        if refit:
-            self.detector.reset(X, P)
-        else:
-            self.detector.fit(X, P)
 
     def _votes(self, features: pd.DataFrame) -> np.ndarray:
         """Vote counts, shape ``(n_instances, n_algorithms)``."""
