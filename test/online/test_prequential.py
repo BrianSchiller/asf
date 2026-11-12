@@ -125,8 +125,12 @@ def test_maximize_quality_uses_higher_scores_for_sbs_vbs_and_schedules() -> None
     assert primary.maximize
     assert primary.steps["user_cost"].tolist() == [3.0, 8.0]
     assert primary.steps["vbs_cost"].tolist() == [9.0, 8.0]
-    assert primary.steps["sbs_cost"].tolist() == [3.0, 8.0]
-    assert primary.summary()["closed_gap"] == 0.0
+    # SBS in hindsight on the evaluated rows: mean a = 5.5, mean b = 6.5 -> b
+    assert primary.steps["sbs_cost"].tolist() == [9.0, 4.0]
+    # SBS on the warm-start row (a=5, b=1) -> a
+    assert primary.steps["sbs_cost_warmstart"].tolist() == [3.0, 8.0]
+    assert primary.summary()["closed_gap_warmstart"] == 0.0
+    assert primary.summary()["closed_gap"] == -0.5  # (5.5 - 6.5) / (8.5 - 6.5)
     assert primary.steps["compute_cost"].isna().all()
 
     parallel = run_prequential(
@@ -137,6 +141,7 @@ def test_maximize_quality_uses_higher_scores_for_sbs_vbs_and_schedules() -> None
 
     cold = run_prequential(_Scripted(maximize=True), stream)
     assert cold.steps["sbs_cost"].tolist() == [5.0, 3.0, 8.0]
+    assert cold.steps["sbs_cost_warmstart"].isna().all()
 
 
 def test_maximize_quality_rejects_runtime_constraints() -> None:

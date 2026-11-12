@@ -152,6 +152,15 @@ def run_case(name: str) -> dict[str, Any]:
     return {
         "summary": summary,
         "sbs_cost_per_step": [float(v) for v in steps["sbs_cost"]],
+        **(
+            {
+                "sbs_cost_warmstart_per_step": [
+                    float(v) for v in steps["sbs_cost_warmstart"]
+                ]
+            }
+            if "sbs_cost_warmstart" in steps
+            else {}
+        ),
         "steps": {c: steps[c].tolist() for c in STEP_COLUMNS},
         "schedules": schedules,
         "retrain_steps": list(result.retrain_steps),
