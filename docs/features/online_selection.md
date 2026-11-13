@@ -153,8 +153,8 @@ When the detector signals drift, `on_drift(signal)` runs the configured
 
 | Response | Selector hook | Implemented by |
 |---|---|---|
-| `RetrainResponse()` | `_retrain` | `OnlinePairwiseSelector` (the default with a detector) |
-| `ResetResponse()` | `_reset_model` | bandits (`reset_arms`) |
+| `RetrainResponse()` | `_retrain` | `OnlinePairwiseSelector` (the default with a detector), `OnlineEPMSelector` |
+| `ResetResponse()` | `_reset_model` | bandits (`reset_arms`), `OnlineEPMSelector` |
 | `ReweightResponse(factor)` | `_discount_history` | planned |
 | `RaiseExplorationResponse(factor, steps)` | `_boost_exploration` | planned |
 
@@ -243,6 +243,8 @@ the meaning of one bumps it. `load` rejects newer versions.
   `variant="paper"` and `variant="code"` implementations.
 * `FrugalPairwiseSelector`: one-vs-one selector that runs a second algorithm
   only when it is unsure (Kuş et al.); see [Frugal pairwise selector](frugal_pairwise.md).
+* `OnlineEPMSelector`: one runtime model per algorithm (Degroote et al.,
+  2018), see below.
 * Bandits (`UCBSelector`, `ThompsonSamplingSelector`, `LinUCBSelector`,
   `LinTSSelector`) and their non-stationary variants: see
   [Bandit selectors](bandits.md).
@@ -254,6 +256,52 @@ Jeroen-code variant supports `"least_observed"` or `"cost_based"` (weights
 assumption, so configure it with `maximize=True`. ASF estimates the paper
 variant's pairwise accuracy with cross-validation; the paper's accuracy
 weighting does not specify this estimation procedure.
+
+### OnlineEPMSelector (runtime models)
+
+The regression-based method of Degroote et al. (2018). Every algorithm has
+its own regression model (default: a random forest with R `randomForest`
+defaults, 500 trees) that predicts its PAR10 performance from the features.
+A model learns only from instances its algorithm was run on, so the partially
+observed online data needs no imputation.
+
+```python
+from sklearn.ensemble import RandomForestRegressor
+from asf.online.selectors import OnlineEPMSelector
+
+selector = OnlineEPMSelector(
+    strategy="ucb",            # "greedy" (default), "epsilon_greedy", "ucb"
+    gamma=1.0,                 # UCB weight; epsilon=0.05 for epsilon-greedy
+    budget=stream.cutoff,      # cutoff for scoring the warm start
+    random_state=0,
+    # estimator=RandomForestRegressor(n_estimators=100, n_jobs=-1, ...),
+)
+```
+
+* **Strategies**: greedy picks the best prediction; epsilon-greedy picks a
+  uniformly random algorithm with probability `epsilon`; UCB picks the lowest
+  `prediction - gamma * sd` (runtime) or highest `prediction + gamma * sd`
+  (`maximize=True`).
+* **Uncertainty**: `uncertainty="jackknife"` (default, as in the paper via
+  mlr: jackknife-after-bootstrap with bias correction), `"tree_std"` (spread
+  across trees) or `None` (faster; not with UCB). It fills the prediction
+  record's `uncertainty`, which gates can use.
+* **Targets**: unsolved runs (censored, or above the cutoff) count as
+  `par_factor * cutoff`. `target_transform="log10"` trains on log runtimes
+  instead of the raw scale. `predicted_runtime` is the predicted PAR10 value
+  of the chosen algorithm.
+* **Updates**: models are refitted every `retrain_every=10` new data points
+  (extra runs count), only those whose data changed. Algorithms without data
+  are tried first; a model is fitted on an algorithm's first observation. By
+  default all data is kept (`window_size=None`).
+* **Runs**: one per instance (default gate `NeverProbe`). The paper's
+  `allData` upper bound is `gate=AlwaysProbe()` with `result_mode="primary"`.
+* **Drift responses**: `RetrainResponse` (refit now) and `ResetResponse`
+  (forget all data and models).
+
+A forest with 500 trees on about 1,500 instances takes tens of seconds to
+fit on one core. Set `n_jobs` on the estimator, or use fewer trees for
+pilots.
 
 See `examples/online/` for runnable examples.
 See [Synthetic streams](synthetic_streams.md) to configure stationary, sudden,
