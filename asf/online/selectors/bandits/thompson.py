@@ -314,4 +314,3 @@ class DTSOCSelector(AbstractContextualBandit):
         assert isinstance(self.partitioner, OnlineKMeans)
         phi = self.partitioner.membership(z)
         return phi * super()._observation_weight(z, observation)
-

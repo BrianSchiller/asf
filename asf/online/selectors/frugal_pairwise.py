@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.prediction import PredictionRecord
 
 
 class FrugalPairwiseSelector(AbstractOnlineSelector):
@@ -16,7 +17,10 @@ class FrugalPairwiseSelector(AbstractOnlineSelector):
     via ``wrapper.model_class.predict_proba`` as SATzilla/CSHC do), see
     Kus et al., "Frugal Algorithm Selection" (2024).
 
-    TODO: implement.
+    TODO: implement. Intended shape (F1 interfaces): ``_select`` returns a
+    ``PredictionRecord`` with ``uncertainty`` set and the nominee(s) in
+    ``candidates``; the uncertainty criterion lives in an
+    ``AbstractExtraRunGate`` passed as ``gate``.
     """
 
     def _fit_initial(
@@ -24,7 +28,7 @@ class FrugalPairwiseSelector(AbstractOnlineSelector):
     ) -> None:
         raise NotImplementedError
 
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
+    def _select(self, features: pd.DataFrame) -> PredictionRecord:
         raise NotImplementedError
 
     def _observe(self, observation: Observation) -> None:

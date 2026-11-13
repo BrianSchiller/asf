@@ -1,4 +1,19 @@
-"""Interface for drift detectors."""
+"""
+Interfaces for drift detectors.
+
+Two kinds of detectors exist:
+
+* :class:`AbstractDriftDetector` -- *feature-based* (or performance-row-based):
+  sees each instance's features and partially observed performance, needs a
+  reference fit, may score single instances. Example: PCA reconstruction.
+* :class:`AbstractScalarDriftDetector` -- *scalar-stream*: sees one number
+  per instance (e.g. a prediction residual) and needs no reference data.
+  Examples: ADWIN, EDDM. An
+  :class:`~asf.online.drift.statistics.AbstractDriftStatistic` turns an
+  observation plus the selector's prediction into that number.
+
+Both report a :class:`DriftSignal` per update.
+"""
 
 from __future__ import annotations
 
@@ -31,7 +46,7 @@ class DriftSignal:
 
 class AbstractDriftDetector(ABC):
     """
-    Base class for drift detectors.
+    Base class for feature-based drift detectors.
 
     A detector is *independent of any selector*: it only sees features and,
     for performance-aware detectors, the observed performance of the instance.
@@ -75,3 +90,34 @@ class AbstractDriftDetector(ABC):
     ) -> None:
         """Re-reference the detector after a handled drift (default: refit)."""
         self.fit(features, performance)
+
+
+class AbstractScalarDriftDetector(ABC):
+    """
+    Base class for detectors on a stream of scalars (ADWIN, EDDM, ...).
+
+    The detector sees one value per instance, typically produced by an
+    :class:`~asf.online.drift.statistics.AbstractDriftStatistic` from the
+    observation and the selector's prediction. It needs no reference fit.
+    All window sizes, confidence levels and thresholds must be constructor
+    parameters.
+    """
+
+    @abstractmethod
+    def update(self, value: float, censored: bool = False) -> DriftSignal:
+        """
+        Consume one value and report drift.
+
+        Parameters
+        ----------
+        value : float
+            The statistic for the current instance.
+        censored : bool, default=False
+            ``True`` if ``value`` is only a bound (e.g. the run was stopped at
+            its budget, so the true runtime is at least the observed one).
+            Detectors that cannot use bounds may ignore such values.
+        """
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Forget the stream seen so far (called after a handled drift)."""

@@ -14,7 +14,8 @@ class StaticOnlineSelector(AbstractOnlineSelector):
     """
     Wrap any offline ASF selector so it can run in the online loop.
 
-    It is fitted once on the warm-start data and never updated; it is the
+    It is fitted once on the warm-start data and never updated (so it needs a
+    warm start, ``SUPPORTS_COLD_START = False``); it is the
     "no adaptation" lower bound for drifting streams and doubles as an adapter
     check for the online interface.
 
@@ -25,6 +26,8 @@ class StaticOnlineSelector(AbstractOnlineSelector):
     **kwargs : Any
         Forwarded to :class:`AbstractOnlineSelector`.
     """
+
+    SUPPORTS_COLD_START = False
 
     def __init__(self, selector: AbstractSelector, **kwargs: Any) -> None:
         super().__init__(**kwargs)

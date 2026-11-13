@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.prediction import PredictionRecord
 from asf.online.selectors.bandits.confidence import ConfidenceModel
 from asf.online.selectors.bandits.context import ContextBuilder, model_input
 from asf.online.selectors.bandits.history import BanditHistory
@@ -67,7 +68,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
 
     Every step it plays exactly one arm (the schedule ``[(arm, 0.0)]``, i.e.
     run with the scenario cutoff) and learns from all arms reported in the
-    observation.
+    observation. It nominates no extra runs; a ``gate`` can add some (e.g.
+    from ``GateContext.ranked_alternatives()``, ordered by the arm scores).
 
     Hooks for subclasses
     --------------------
@@ -82,7 +84,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
     ``_policy_time(z, cell)``
         The time ``t`` the policy sees (e.g. a discounted play count).
     ``reset_arms()``
-        Forget all observations, e.g. when a drift detector fires.
+        Forget all observations. It is the bandits' ``_reset_model``, so
+        ``drift_response=ResetResponse()`` calls it when a detector fires.
 
     Parameters
     ----------
@@ -209,7 +212,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
             self._learn(Z[i], rewards, self._observation_weight(Z[i], None))
 
     # ------------------------------------------------------------- decisions
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
+    def _select(self, features: pd.DataFrame) -> PredictionRecord:
         z = self._feature_vector(features)
         x = model_input(z, self.contextual)[0]
         cell = self.partitioner.assign(z)
@@ -218,7 +221,12 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         self.last_scores_ = dict(zip(self.algorithms, scores.tolist()))
         best = np.flatnonzero(scores == scores.max())
         arm = self.algorithms[int(self.rng_.choice(best))]
-        return [(arm, 0.0)]
+        return PredictionRecord(
+            chosen=arm,
+            budget=0.0,
+            score=self.last_scores_[arm],
+            scores=dict(self.last_scores_),
+        )
 
     def _observe(self, observation: Observation) -> None:
         z = self._feature_vector(observation.features)
@@ -236,6 +244,10 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         """Forget all observations of all arms (the clock keeps running)."""
         self.history_.clear()
         self.posteriors_ = {}
+
+    def _reset_model(self) -> None:
+        """Drift-response hook: :meth:`reset_arms`."""
+        self.reset_arms()
 
     # ------------------------------------------------------------- hooks
     def _feature_vector(self, features: pd.DataFrame) -> np.ndarray:
