@@ -9,7 +9,8 @@ selector's nominees and, optionally, a detector's per-instance score.
 Every :class:`~asf.online.base.AbstractOnlineSelector` owns one gate
 (``gate=...``); without one it uses the selector's default, which reproduces
 the selector's original behaviour (Rook selector: all ``n_additional``
-nominees; bandits: none).
+nominees; bandits: none). :class:`UncertaintyGate` runs extras only when the
+selector is uncertain.
 """
 
 from __future__ import annotations
@@ -133,6 +134,38 @@ class AlwaysProbe(AbstractExtraRunGate):
         self.n = None if n is None else int(n)
 
     def extras(self, context: GateContext) -> Sequence[str]:
+        if self.n is None:
+            return context.candidates
+        return context.candidates[: self.n]
+
+
+class UncertaintyGate(AbstractExtraRunGate):
+    """
+    Run the first ``n`` nominees when the selector is uncertain enough.
+
+    This is stream-based active learning: an extra run is "queried" only if
+    ``prediction.uncertainty >= threshold`` (Kuş et al., "Frugal Algorithm
+    Selection"). Predictions without an uncertainty never trigger extra runs.
+
+    Parameters
+    ----------
+    threshold : float
+        Minimum uncertainty for extra runs. Its scale is the selector's (e.g.
+        least confidence in ``[0, 0.5]`` for the frugal pairwise selector).
+    n : int or None, default=1
+        Number of nominees to run when the gate fires; ``None`` = all.
+    """
+
+    def __init__(self, threshold: float, n: int | None = 1) -> None:
+        if n is not None and n < 0:
+            raise ValueError("n must be >= 0 or None.")
+        self.threshold = float(threshold)
+        self.n = None if n is None else int(n)
+
+    def extras(self, context: GateContext) -> Sequence[str]:
+        uncertainty = context.prediction.uncertainty
+        if uncertainty is None or uncertainty < self.threshold:
+            return ()
         if self.n is None:
             return context.candidates
         return context.candidates[: self.n]
