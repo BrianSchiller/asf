@@ -96,7 +96,8 @@ nominees first and then by descending score.
 default gate, so every selector keeps its built-in behaviour: the Rook
 selector runs `n_additional` extras, the bandits none. `NeverProbe()` runs
 none. The selector rejects unknown algorithms and drops duplicates and the
-primary choice from a gate's answer.
+primary choice from a gate's answer. `UncertaintyGate(threshold, n=1)` runs
+the first `n` nominees only if `prediction.uncertainty >= threshold`.
 
 ## Scoring and protocols
 
@@ -240,6 +241,8 @@ the meaning of one bumps it. `load` rejects newer versions.
   bound; warm start only).
 * `OnlinePairwiseSelector`: partial one-vs-one selector with selectable
   `variant="paper"` and `variant="code"` implementations.
+* `FrugalPairwiseSelector`: one-vs-one selector that runs a second algorithm
+  only when it is unsure (Kuş et al.); see [Frugal pairwise selector](frugal_pairwise.md).
 * `OnlineEPMSelector`: one runtime model per algorithm (Degroote et al.,
   2018), see below.
 * Bandits (`UCBSelector`, `ThompsonSamplingSelector`, `LinUCBSelector`,
