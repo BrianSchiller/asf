@@ -44,6 +44,35 @@ class RewardTransform:
             return self.kind
         return "raw" if maximize else "log"
 
+    def solved_reward(self, runtime: float, cutoff: float) -> float:
+        """
+        Reward of a run that solved the instance in exactly ``runtime``.
+
+        Used as the bound when imputing censored runs: a run stopped at its
+        budget would have earned at most the reward of solving at the budget.
+        Only for the runtime rewards ``"log"`` and ``"par"``.
+
+        Parameters
+        ----------
+        runtime : float
+            The runtime (e.g. the budget a censored run was stopped at).
+        cutoff : float
+            The scenario cutoff (scales the ``"par"`` reward).
+
+        Returns
+        -------
+        float
+            The reward, without any penalty.
+        """
+        kind = self.resolve(cutoff, maximize=False)
+        if kind == "log":
+            return -math.log10(float(runtime) + 1.0)
+        if kind == "par":
+            if not math.isfinite(cutoff):
+                raise ValueError("Reward kind 'par' needs a finite cutoff.")
+            return -float(runtime) / (self.par_factor * cutoff)
+        raise ValueError(f"solved_reward is defined for 'log' and 'par', not {kind!r}.")
+
     def __call__(
         self,
         runtimes: Mapping[str, float],
