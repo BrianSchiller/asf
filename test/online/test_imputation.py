@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 from scipy.stats import norm
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
 
 from asf.online.base import Observation
 from asf.online.evaluation import run_prequential
@@ -31,7 +33,9 @@ from asf.online.selectors.bandits import (
     SlidingWindow,
     ThompsonSamplingSelector,
 )
+from asf.online.selectors.online_epm import OnlineEPMSelector
 from asf.online.streams.stream import InstanceStream
+from asf.preprocessing.schmee_hahn_imputer import schmee_hahn_impute
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -318,3 +322,177 @@ def test_bandit_stream_runs_and_is_deterministic(make: Any, imputation: Any) -> 
 def test_bandit_imputation_is_a_recorded_parameter() -> None:
     sel = LinTSSelector(imputation=SampledImputer(max_tries=5))
     assert isinstance(sel.describe_params()["imputation"], SampledImputer)
+
+
+# ===================================================== online EPM (A1)
+EPM_CUTOFF = 100.0
+
+
+def _epm(**kwargs: Any) -> OnlineEPMSelector:
+    kwargs.setdefault("estimator", RandomForestRegressor(n_estimators=10))
+    kwargs.setdefault("budget", EPM_CUTOFF)
+    kwargs.setdefault("random_state", 0)
+    return OnlineEPMSelector(**kwargs)
+
+
+def _epm_frames(
+    perf: np.ndarray, features: np.ndarray | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    idx = pd.Index([f"w{k}" for k in range(len(perf))])
+    if features is None:
+        features = np.random.default_rng(1).normal(size=(len(perf), 2))
+    feats = pd.DataFrame(features, index=idx).add_prefix("f")
+    return feats, pd.DataFrame(perf, index=idx, columns=["a", "b"], dtype=float)
+
+
+# a: solved 5; b: 100 at the cutoff (solved, as in the evaluator's PAR-k);
+# a: 150 above the cutoff (unsolved); a: censored at the cutoff;
+# a: censored at a budget of 30.
+TARGET_PERF = pd.DataFrame(
+    [[5.0, 100.0], [150.0, np.nan], [100.0, 7.0], [30.0, 8.0]], columns=["a", "b"]
+)
+TARGET_CENS = pd.DataFrame(
+    [[False, False], [False, False], [True, False], [True, False]],
+    columns=["a", "b"],
+)
+
+
+def _fitted_epm(**kwargs: Any) -> OnlineEPMSelector:
+    sel = _epm(**kwargs)
+    sel.fit(*_epm_frames(np.array([[5.0, 50.0]] * 4)))
+    return sel
+
+
+def test_epm_cutoff_targets() -> None:
+    sel = _fitted_epm(imputation=CutoffImputer())
+    out = sel._training_targets(TARGET_PERF, TARGET_CENS)
+    expected = np.array([[5.0, 100.0], [100.0, np.nan], [100.0, 7.0], [30.0, 8.0]])
+    np.testing.assert_array_equal(out, expected)
+    sel.target_transform = "log10"
+    np.testing.assert_allclose(
+        sel._training_targets(TARGET_PERF, TARGET_CENS), np.log10(expected)
+    )
+
+
+def test_epm_drop_targets() -> None:
+    sel = _fitted_epm(imputation=DropCensored())
+    out = sel._training_targets(TARGET_PERF, TARGET_CENS)
+    expected = np.array([[5.0, 100.0], [np.nan, np.nan], [np.nan, 7.0], [np.nan, 8.0]])
+    np.testing.assert_array_equal(out, expected)
+
+
+def test_epm_drop_does_not_learn_from_timeouts() -> None:
+    sel = _fitted_epm(imputation=DropCensored(), retrain_every=1)
+    features = pd.DataFrame([[0.0, 0.0]], index=["o0"], columns=["f0", "f1"])
+    sel.observe(
+        Observation("o0", features, {"a": EPM_CUTOFF}, frozenset({"a"}), EPM_CUTOFF)
+    )
+    assert sel.models_["a"].n_rows == 4  # the censored run was not used
+    sel.observe(Observation("o1", features.rename(index={"o0": "o1"}), {"a": 3.0}))
+    assert sel.models_["a"].n_rows == 5
+
+
+def _censored_linear_data(
+    n: int = 80, seed: int = 0
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+    """log10 runtime of a = 1 + x (+ small noise); runs above 100 s time out."""
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-1.0, 2.0, n)
+    true_log = 1.0 + x + rng.normal(0, 0.1, n)
+    runtime = 10.0**true_log
+    perf = np.column_stack([runtime, np.full(n, 20.0)])
+    feats, frame = _epm_frames(perf, np.column_stack([x, np.zeros(n)]))
+    return feats, frame, true_log
+
+
+def _capture_targets(sel: OnlineEPMSelector) -> dict[str, np.ndarray]:
+    """Record the targets each model is finally fitted on."""
+    seen: dict[str, np.ndarray] = {}
+    original = sel._fit_model
+
+    def wrapper(index: int, X: np.ndarray, y: np.ndarray, sig: Any) -> Any:
+        seen[sel.algorithms[index]] = y.copy()
+        return original(index, X, y, sig)
+
+    sel._fit_model = wrapper  # type: ignore[method-assign]
+    return seen
+
+
+def test_epm_expected_matches_schmee_hahn_impute() -> None:
+    feats, perf, _ = _censored_linear_data()
+    sel = _epm(
+        imputation=ExpectedImputer(),
+        estimator=LinearRegression(),
+        uncertainty=None,
+        target_transform="log10",
+    )
+    seen = _capture_targets(sel)
+    sel.fit(feats, perf)
+
+    y = np.log10(np.minimum(perf["a"].to_numpy(), EPM_CUTOFF))
+    reference, _ = schmee_hahn_impute(
+        LinearRegression, y, feats.to_numpy(), budget=math.log10(EPM_CUTOFF)
+    )
+    np.testing.assert_allclose(seen["a"], reference)
+    censored = perf["a"].to_numpy() >= EPM_CUTOFF
+    assert censored.sum() >= 10
+    assert np.all(seen["a"][censored] > 2.0)  # above log10(cutoff)
+    np.testing.assert_array_equal(seen["a"][~censored], y[~censored])
+    np.testing.assert_array_equal(seen["b"], np.log10(20.0))  # nothing to impute
+
+
+def test_epm_expected_is_closer_to_the_truth_than_the_cutoff() -> None:
+    feats, perf, true_log = _censored_linear_data(n=200)
+    sel = _epm(
+        imputation=ExpectedImputer(),
+        estimator=LinearRegression(),
+        uncertainty=None,
+        target_transform="log10",
+    )
+    seen = _capture_targets(sel)
+    sel.fit(feats, perf)
+    censored = perf["a"].to_numpy() >= EPM_CUTOFF
+    error_expected = np.abs(seen["a"][censored] - true_log[censored]).mean()
+    error_cutoff = np.abs(2.0 - true_log[censored]).mean()
+    assert error_expected < 0.5 * error_cutoff
+
+
+def test_epm_expected_is_deterministic_with_a_forest() -> None:
+    feats, perf, _ = _censored_linear_data()
+
+    def fitted_targets(seed: int) -> np.ndarray:
+        sel = _epm(
+            imputation=ExpectedImputer(), target_transform="log10", random_state=seed
+        )
+        seen = _capture_targets(sel)
+        sel.fit(feats, perf)
+        return seen["a"]
+
+    np.testing.assert_array_equal(fitted_targets(0), fitted_targets(0))
+    assert not np.array_equal(fitted_targets(0), fitted_targets(1))
+
+
+@pytest.mark.parametrize(
+    "imputation", [None, CutoffImputer(), DropCensored(), ExpectedImputer()]
+)
+def test_epm_stream_runs(imputation: CensoredImputer | None) -> None:
+    stream = _timeout_stream(n=120)
+    result = run_prequential(
+        _epm(imputation=imputation, target_transform="log10"), stream, n_warmstart=20
+    )
+    assert len(result.steps) == 100
+
+
+@pytest.mark.parametrize(
+    "kwargs, error",
+    [
+        ({"imputation": SampledImputer()}, ValueError),
+        ({"imputation": CutoffImputer(), "maximize": True}, ValueError),
+        ({"imputation": "cutoff"}, TypeError),
+        ({"imputation_max_iter": 0}, ValueError),
+        ({"imputation_tol": 0.0}, ValueError),
+    ],
+)
+def test_epm_invalid_imputation(kwargs: dict[str, Any], error: type) -> None:
+    with pytest.raises(error):
+        _epm(**kwargs)
