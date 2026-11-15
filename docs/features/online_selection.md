@@ -25,6 +25,7 @@ propose:  record = _select(features)                 # subclass -> PredictionRec
           last_prediction_ = record + extras          # logged per step
 
 observe:  buffer.append(obs); _observe(obs)           # subclass learns
+          gate.observe(last_prediction_, obs)         # gate sees the outcome
           signal = detector.update(...)               # feature or scalar detector
           if signal.drift: on_drift(signal)           # drift responses
           if retrain_policy.should_retrain(...): retrain()
@@ -83,7 +84,15 @@ A gate (`asf.online.gate`) decides which extra algorithms run:
 class AbstractExtraRunGate(ABC):
     needs_instance_score: bool = False
     def extras(self, context: GateContext) -> Sequence[str]: ...
+    def observe(self, prediction: PredictionRecord, observation: Observation) -> None: ...
+    def reset(self) -> None: ...
 ```
+
+Only `extras` must be implemented. `observe` is called once per instance
+after the scheduled algorithms ran, with the final record (including the
+extras) and the observation, for gates that track what their extras cost or
+yielded (e.g. a compute budget). `reset` is called when the selector is
+fitted. Both do nothing by default.
 
 `GateContext` carries the prediction record, the nominees (`candidates`),
 all algorithms, the instance features, the step, and optionally the
@@ -96,8 +105,68 @@ nominees first and then by descending score.
 default gate, so every selector keeps its built-in behaviour: the Rook
 selector runs `n_additional` extras, the bandits none. `NeverProbe()` runs
 none. The selector rejects unknown algorithms and drops duplicates and the
-primary choice from a gate's answer. `UncertaintyGate(threshold, n=1)` runs
-the first `n` nominees only if `prediction.uncertainty >= threshold`.
+primary choice from a gate's answer.
+
+#### Criteria: when is an extra run worth it?
+
+A criterion gate (`ScoreGate`) rates every instance with one number, "how
+much reason is there for an extra run here?", and runs extras on the
+instances with the highest ratings:
+
+| Gate | Rates an instance by | Needs |
+|---|---|---|
+| `UncertaintyGate` | the selector's uncertainty | `PredictionRecord.uncertainty` (frugal pairwise, EPM) |
+| `CloseCallGate` | how close the two best entries of `scores` are (vote gap, predicted-runtime gap) | `PredictionRecord.scores` (pairwise selectors, EPM, bandits) |
+| `UnfamiliarityGate` | the detector's per-instance score | a feature detector with `score` (PCA, KS ensemble) |
+| `TimeoutRiskGate` | the predicted runtime of the chosen algorithm | `PredictionRecord.predicted_runtime` (EPM) |
+
+`UncertaintyGate` is in `asf.online.gate`, the others in
+`asf.online.gate_criteria`. Each takes exactly one of two rules:
+
+```python
+from asf.online.gate import UncertaintyGate
+from asf.online.gate_criteria import CloseCallGate, TimeoutRiskGate, UnfamiliarityGate
+
+UncertaintyGate(threshold=0.25)              # fixed: uncertainty >= 0.25
+UncertaintyGate(rate=0.2, random_state=0)    # the 20% most uncertain recent instances
+CloseCallGate(max_gap=1)                     # fixed: the two best differ by at most 1 vote
+CloseCallGate(rate=0.2, relative=True)       # gap relative to the larger score
+UnfamiliarityGate(rate=0.2)                  # needs detector=... on the selector
+TimeoutRiskGate(threshold=0.8 * cutoff)      # fixed: predicted runtime in seconds
+```
+
+* **Fixed threshold.** Fire if the rating reaches the threshold. Its scale
+  is the criterion's and the selector's, so thresholds are not comparable
+  across methods. Instances without a rating never fire.
+* **Rate `q`.** Fire on the share `q` of instances with the highest ratings
+  among the last `window_size=200` rated instances, i.e. above the `1 - q`
+  quantile of the recent ratings. `q = 0` never runs extras and `q = 1`
+  always does (Rook et al.'s "always two" with `n=1`). Sweeping `q` gives
+  every selector and criterion a cost-versus-quality curve on the same axis.
+  Equal ratings are separated at random (seeded by the gate's
+  `random_state`), so discrete ratings such as vote gaps also give a rate of
+  `q`. Instances without a rating fire with probability `q`; a criterion the
+  selector cannot provide therefore gives random extras at the same cost,
+  which is the baseline a criterion has to beat.
+
+  Exactly: with `g` earlier ratings in the window above the current one, `e`
+  equal to it and `k` ratings in the window, the gate fires if
+  `(g + u * (e + 1)) / (k + 1) < q`, `u` uniform in `[0, 1)`.
+* The rate is `q` while the ratings are stable. When they rise, e.g. after a
+  drift, the gate fires more often until the window has turned over.
+* When a gate fires it runs the first `n=1` nominees. If the selector
+  nominates none (bandits), it runs the first `n` of
+  `context.ranked_alternatives()`. This also applies if the frugal selector's
+  `timeout_filter` removed all nominees.
+* `TimeoutRiskGate` needs no cutoff under a rate (ranking by predicted
+  runtime is ranking by runtime/cutoff). `OnlineEPMSelector` predicts PAR10,
+  so its predictions can exceed the cutoff.
+* The criterion's rating is not written to the result files, except where it
+  is a logged column anyway (`pred_uncertainty`, `instance_score`,
+  `pred_runtime`).
+
+A new criterion is a subclass of `ScoreGate` with one method,
+`_score(context) -> float | None` (higher = more reason for an extra run).
 
 ## Scoring and protocols
 
@@ -264,7 +333,8 @@ the meaning of one bumps it. `load` rejects newer versions.
 |---|---|
 | `asf.online.base` | `AbstractOnlineSelector`, `Observation`, `StepTrace` |
 | `asf.online.prediction` | `PredictionRecord` |
-| `asf.online.gate` | extra-run gates |
+| `asf.online.gate` | extra-run gates, `ScoreGate` (threshold or rate) |
+| `asf.online.gate_criteria` | criteria for extra runs (close call, unfamiliar instance, timeout risk) |
 | `asf.online.buffer` | sliding window with partially observed performance |
 | `asf.online.imputation` | rules for learning from censored runs (Tornede et al.) |
 | `asf.online.drift` | drift detectors (when to reconfigure) and drift statistics |

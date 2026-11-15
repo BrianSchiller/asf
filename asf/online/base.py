@@ -21,6 +21,7 @@ Inside ``propose`` the base class runs::
 and inside ``observe``::
 
     buffer.append(observation); _observe(observation)   # subclass: learn
+    gate.observe(last_prediction_, observation)          # gate sees the outcome
     signal = detector.update(...)                        # feature or scalar detector
     if signal.drift: on_drift(signal)                    # drift responses
     if retrain_policy.should_retrain(...): retrain()     # schedule-based retraining
@@ -285,6 +286,7 @@ class AbstractOnlineSelector(AbstractSelector):
         self.last_signal_ = None
         self.last_drift_step_ = None
         self._trace = None
+        self.gate_.reset()
         self.buffer = ObservationBuffer(
             algorithms=self.algorithms,
             feature_names=list(features.columns),
@@ -394,6 +396,8 @@ class AbstractOnlineSelector(AbstractSelector):
         self.buffer.append(obs)
         self.n_seen_ += 1
         self._observe(obs)  # step_ is the 0-based index of this instance
+        if trace.prediction is not None:
+            self.gate_.observe(trace.prediction, obs)
 
         signal: DriftSignal | None = None
         if self._adaptation_active():

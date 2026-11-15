@@ -29,7 +29,10 @@ print(result.summary()["extra_run_rate"])
 4. **Gate.** The default `UncertaintyGate(threshold=0.25, n=1)` runs the first
    nominee if the uncertainty is at least 0.25 (that is, if the pair predicts
    at most 75 % for either side). Any other gate can be passed as `gate=`, e.g.
-   `AlwaysProbe(1)` to always run two algorithms like Rook et al.
+   `AlwaysProbe(1)` to always run two algorithms like Rook et al., or
+   `UncertaintyGate(rate=0.2)` to run a second algorithm on the 20 % most
+   uncertain recent instances (see
+   [Online Selection](online_selection.md#criteria-when-is-an-extra-run-worth-it)).
 5. **Learn.** After the runs, only the pairs whose algorithms both ran are
    refitted (`update_every` batches this).
 
