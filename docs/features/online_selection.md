@@ -170,6 +170,43 @@ that stay inside the retained principal subspace do not change the error and
 are not detected. `reference_errors="cross_validated"` gives more honest
 thresholds than NannyML's in-sample errors when the reference set is small.
 
+`KSSubspaceEnsembleDetector` detects covariate drift with univariate
+Kolmogorov-Smirnov tests on feature subspaces, after EDFS (Korycki and
+Krawczyk, 2019). It only looks at features, never at performance:
+
+```python
+from asf.online.drift import KSSubspaceEnsembleDetector
+
+detector = KSSubspaceEnsembleDetector(
+    n_subspaces=10, subspace_size=0.1, window_size=50, alpha=0.01, random_state=0
+)
+selector = OnlinePairwiseSelector(detector=detector, reference_period=100)
+```
+
+* Every `stride` instances (default: `window_size`) each monitored feature is
+  compared between the reference data and the last `window_size` instances.
+  A subspace has drifted if a strict majority of its tests reject at level
+  `alpha`; the detector signals drift if any subspace has. The signal's
+  `score` is the largest share of rejecting tests in a subspace (drift above
+  0.5); `last_votes_` shows which features rejected.
+* `subspaces="guided"` builds the subspaces with the paper's greedy
+  round-robin algorithm. The paper rates features by mutual information with
+  the class label; here a candidate is rated by its mean absolute Spearman
+  correlation with the features already in the subspace, so no labels or
+  runtimes are needed. `"random"` draws them at random, and a list of
+  feature-name groups (e.g. ASlib feature groups) fixes them.
+* `score(features)` is the per-instance share of a subspace's features that
+  lie outside the min-max range of the reference data (maximum over
+  subspaces), for gates that want an out-of-distribution score.
+* Features that end up in no subspace are not monitored; check `subspaces_`.
+  With few features a subspace is small (one feature if `0.1 * d <= 1`), the
+  vote then protects less against false alarms.
+* The reference is the selector's buffer at the time of fitting. Right after
+  a drift it still mixes old and new instances, so the detector keeps
+  signalling until the buffer has turned over. `reference_size=window_size`
+  uses only the newest instances as reference (the paper's behaviour) and
+  avoids this, but a return to an earlier regime then counts as drift again.
+
 ## Result files (schema v1)
 
 ```python
