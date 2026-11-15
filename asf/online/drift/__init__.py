@@ -3,6 +3,7 @@ from asf.online.drift.abstract_detector import (
     AbstractScalarDriftDetector,
     DriftSignal,
 )
+from asf.online.drift.ks_subspace_ensemble import KSSubspaceEnsembleDetector
 from asf.online.drift.pca_reconstruction import PCAReconstructionDetector
 from asf.online.drift.statistics import (
     AbstractDriftStatistic,
@@ -14,6 +15,7 @@ __all__ = [
     "AbstractDriftDetector",
     "AbstractScalarDriftDetector",
     "DriftSignal",
+    "KSSubspaceEnsembleDetector",
     "PCAReconstructionDetector",
     "AbstractDriftStatistic",
     "LogRuntimeResidual",
