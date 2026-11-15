@@ -28,7 +28,9 @@ from sklearn.impute import SimpleImputer
 
 from asf.online.base import AbstractOnlineSelector, Observation
 from asf.online.gate import AbstractExtraRunGate, NeverProbe
+from asf.online.imputation import CensoredImputer, ExpectedImputer
 from asf.online.prediction import PredictionRecord
+from asf.preprocessing.schmee_hahn_imputer import schmee_hahn_impute
 from asf.utils.random_state import clone_with_random_state
 
 Strategy = Literal["greedy", "epsilon_greedy", "ucb"]
@@ -151,9 +153,24 @@ class OnlineEPMSelector(AbstractOnlineSelector):
       standard error is 0.
     * Assumption (timeouts): a run is unsolved if it was censored or its
       runtime exceeds the cutoff (as in the evaluator's PAR-k); its target is
-      ``par_factor * cutoff``. The cutoff is that of the last observation,
-      before the first one ``budget``. Subclasses (e.g. censored imputation)
-      override :meth:`_training_targets`.
+      ``par_factor * cutoff``, unless ``imputation`` is set. The cutoff is
+      that of the last observation, before the first one ``budget``.
+    * Censored imputation (Tornede et al., 2022; not in Degroote et al.):
+      with ``imputation`` set, unsolved runs are learnt from as follows.
+      :class:`~asf.online.imputation.CutoffImputer`: target = the budget the
+      run was stopped at (at most the cutoff).
+      :class:`~asf.online.imputation.DropCensored`: no target (the run is not
+      used). :class:`~asf.online.imputation.ExpectedImputer`: Schmee and Hahn
+      (1979) via ASF's :func:`~asf.preprocessing.schmee_hahn_imputer.schmee_hahn_impute`
+      on the target scale: start at the cutoff, then alternate fitting the
+      model and replacing each unsolved target by the mean of
+      ``N(prediction, sigma^2)`` above the cutoff, where ``sigma`` is the
+      error on the solved runs. Each model update then costs up to
+      ``imputation_max_iter + 1`` fits per algorithm with unsolved runs; the
+      normal assumption fits ``target_transform="log10"`` best. There a value
+      exactly at the cutoff counts as censored, and all unsolved runs are
+      censored at the cutoff (the selector always runs with the cutoff as
+      budget). Sampling rules have no batch version and are rejected.
     * Deviation (missing features): the paper imputes the mean over the whole
       scenario, which would use future instances; here each model imputes the
       mean of its training instances (0 for features that are always missing).
@@ -197,6 +214,15 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         Penalty factor for unsolved runs (PAR10 in the paper).
     retrain_every : int, default=10
         Number of new data points after which the models are updated.
+    imputation : CensoredImputer or None, default=None
+        How unsolved runs are learnt from (see "Censored imputation" above);
+        ``None`` = the PAR-k target (paper). Not for ``maximize=True``.
+    imputation_max_iter : int, default=20
+        Maximum number of fits of the Schmee-Hahn iteration
+        (``ExpectedImputer`` only).
+    imputation_tol : float, default=1e-3
+        The iteration stops once no imputed target changes by more than this
+        (target scale; ``ExpectedImputer`` only).
     window_size : int or None, default=None
         Instances kept as training data; ``None`` = all (paper).
     **kwargs : Any
@@ -217,6 +243,9 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         target_transform: TargetTransform = "none",
         par_factor: float = 10.0,
         retrain_every: int = 10,
+        imputation: CensoredImputer | None = None,
+        imputation_max_iter: int = 20,
+        imputation_tol: float = 1e-3,
         window_size: int | None = None,
         **kwargs: Any,
     ) -> None:
@@ -244,6 +273,20 @@ class OnlineEPMSelector(AbstractOnlineSelector):
             raise ValueError("uncertainty needs a forest estimator (BaseForest).")
         if uncertainty == "jackknife" and not template.bootstrap:
             raise ValueError("uncertainty='jackknife' needs bootstrap=True.")
+        if imputation is not None:
+            if not isinstance(imputation, CensoredImputer):
+                raise TypeError("imputation must be a CensoredImputer or None.")
+            if self.maximize:
+                raise ValueError("Censored imputation is for runtime minimization.")
+            if imputation.USES_MODEL and not isinstance(imputation, ExpectedImputer):
+                raise ValueError(
+                    f"{imputation!r} has no batch version; use CutoffImputer, "
+                    "DropCensored or ExpectedImputer."
+                )
+        if imputation_max_iter < 1:
+            raise ValueError("imputation_max_iter must be >= 1.")
+        if not imputation_tol > 0:
+            raise ValueError("imputation_tol must be > 0.")
 
         self.strategy = strategy
         self.epsilon = float(epsilon)
@@ -254,6 +297,9 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         self.target_transform = target_transform
         self.par_factor = float(par_factor)
         self.retrain_every = int(retrain_every)
+        self.imputation = imputation
+        self.imputation_max_iter = int(imputation_max_iter)
+        self.imputation_tol = float(imputation_tol)
         self.estimator_ = template
 
     # ------------------------------------------------------------ fitting
@@ -301,16 +347,36 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         Training targets per instance and algorithm (``NaN`` = not run).
 
         Unsolved runs (censored, or runtime above the cutoff) get
-        ``par_factor * cutoff``; then ``target_transform`` is applied.
+        ``par_factor * cutoff`` without ``imputation``. With it they get the
+        rule's value at their bound (the budget, at most the cutoff): the
+        bound for :class:`~asf.online.imputation.CutoffImputer` and as the
+        start of the Schmee-Hahn iteration, ``NaN`` for
+        :class:`~asf.online.imputation.DropCensored`. Then
+        ``target_transform`` is applied.
         """
         values = performance.to_numpy(dtype=float, copy=True)
-        if math.isfinite(self.cutoff_):
-            with np.errstate(invalid="ignore"):
-                unsolved = censored.to_numpy(dtype=bool) | (values > self.cutoff_)
-            values[unsolved & ~np.isnan(values)] = self.par_factor * self.cutoff_
+        unsolved = self._unsolved(values, censored)
+        if self.imputation is None:
+            values[unsolved] = self.par_factor * self.cutoff_
+        elif unsolved.any():
+            bound = np.minimum(values[unsolved], self.cutoff_)
+            if self.imputation.USES_MODEL:
+                values[unsolved] = bound  # start of the iteration
+            else:
+                zeros = np.zeros_like(bound)
+                values[unsolved] = self.imputation(bound, zeros, zeros, self.rng_)
         if self.target_transform == "log10":
-            values = np.log10(np.maximum(values, LOG_FLOOR))
+            with np.errstate(invalid="ignore"):
+                values = np.log10(np.maximum(values, LOG_FLOOR))
         return values
+
+    def _unsolved(self, values: np.ndarray, censored: pd.DataFrame) -> np.ndarray:
+        """Observed runs that were censored or exceed the cutoff."""
+        if not math.isfinite(self.cutoff_):
+            return np.zeros(values.shape, dtype=bool)
+        with np.errstate(invalid="ignore"):
+            unsolved = censored.to_numpy(dtype=bool) | (values > self.cutoff_)
+        return unsolved & ~np.isnan(values)
 
     def _training_data(self) -> tuple[np.ndarray, np.ndarray, int]:
         """Features, targets and the row number of the first training row."""
@@ -343,9 +409,43 @@ class OnlineEPMSelector(AbstractOnlineSelector):
             signature = (int(seen[0]), int(seen[-1]), self.cutoff_)
             if current is not None and current.signature == signature:
                 continue
-            self.models_[algo] = self._fit_model(
-                j, X[observed], Y[observed, j], signature
-            )
+            y = Y[observed, j]
+            if isinstance(self.imputation, ExpectedImputer):
+                y = self._schmee_hahn(j, X[observed], y)
+            self.models_[algo] = self._fit_model(j, X[observed], y, signature)
+
+    def _schmee_hahn(self, index: int, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """
+        Impute the unsolved targets of one algorithm (Schmee and Hahn, 1979).
+
+        ``y`` holds the training targets with unsolved runs at the cutoff (on
+        the target scale), which is how :func:`schmee_hahn_impute` finds them.
+        """
+        if not math.isfinite(self.cutoff_):
+            return y
+        bound = self.cutoff_
+        if self.target_transform == "log10":
+            bound = math.log10(max(bound, LOG_FLOOR))
+        if not np.any(y >= bound):
+            return y
+        X = SimpleImputer(strategy="mean", keep_empty_features=True).fit_transform(X)
+        seed = self._seed(index)
+        imputed, _ = schmee_hahn_impute(
+            lambda: clone_with_random_state(self.estimator_, seed),
+            y,
+            X,
+            em_max_iter=self.imputation_max_iter,
+            em_tol=self.imputation_tol,
+            budget=bound,
+        )
+        return imputed
+
+    def _seed(self, index: int) -> int | None:
+        """Seed of the ``index``-th algorithm's model (``None`` = random)."""
+        if self.random_state is None:
+            return None
+        entropy = [self.random_state, index]
+        return int(np.random.SeedSequence(entropy).generate_state(1)[0])
 
     def _fit_model(
         self,
@@ -357,11 +457,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         """Fit the model of the ``index``-th algorithm."""
         imputer = SimpleImputer(strategy="mean", keep_empty_features=True)
         X = imputer.fit_transform(X)
-        seed = None
-        if self.random_state is not None:
-            entropy = [self.random_state, index]
-            seed = int(np.random.SeedSequence(entropy).generate_state(1)[0])
-        estimator = clone_with_random_state(self.estimator_, seed)
+        estimator = clone_with_random_state(self.estimator_, self._seed(index))
         estimator.fit(X, y)
         oob = None
         if self.uncertainty == "jackknife":

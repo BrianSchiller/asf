@@ -9,6 +9,7 @@ Arms are algorithms. A bandit selector is assembled from independent parts::
     partitioner  which cell of arm models to use   (partitioning.py)
     confidence   weight fixed at arrival           (confidence.py)
     reward       observation -> reward             (rewards.py)
+    imputation   censored run -> imputed reward    (asf/online/imputation.py)
 
 UCB, TS, LinUCB and LinTS (``ucb.py``, ``thompson.py``) are presets of this
 class. Non-stationary variants are obtained by passing a different weighting,
@@ -35,12 +36,13 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Callable, Hashable, Mapping, Sequence
+from typing import Any, Callable, Collection, Hashable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.imputation import CensoredImputer
 from asf.online.prediction import PredictionRecord
 from asf.online.selectors.bandits.confidence import ConfidenceModel
 from asf.online.selectors.bandits.context import ContextBuilder, model_input
@@ -76,7 +78,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
     ``_feature_vector(features)``
         Instance -> ``z`` (default: imputed, standardised features).
     ``_rewards(observation)``
-        Observation -> reward per executed arm (e.g. censored imputation).
+        Observation -> reward per executed arm (censored runs are imputed
+        here if ``imputation`` is set).
     ``_observation_weight(z, observation)``
         Weight stored with an observation (default: confidence score or 1).
     ``_posterior_for(arm, z, cell, trace)``
@@ -116,6 +119,17 @@ class AbstractContextualBandit(AbstractOnlineSelector):
     reward : RewardTransform or None, default=None
         ``None`` = ``RewardTransform("auto")`` (``-log10(PAR10 + 1)`` for
         runtimes, the raw score when maximizing).
+    imputation : CensoredImputer or None, default=None
+        How censored runs are learnt from (Tornede et al., 2022). ``None``:
+        they get the PAR-k penalty of ``reward``. Otherwise the run's reward
+        is imputed below the reward of solving at its budget, from the arm's
+        posterior *before* the update (see
+        :mod:`asf.online.imputation`); :class:`~asf.online.imputation.DropCensored`
+        skips the update of that arm. Unsolved warm-start runs (runtime at or
+        above ``budget``) are treated as censored as well. Needs the
+        ``"log"`` or ``"par"`` reward; rules with ``PREDICTIVE = True`` need a
+        posterior with ``noise_var`` (Gaussian ones). With several traces or
+        cells, the first trace's posterior in the instance's cell is used.
     standardize : bool, default=True
         Standardise features with warm-start statistics.
     max_history : int or None, default=None
@@ -138,6 +152,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         partitioner: Partitioner | None = None,
         confidence: ConfidenceModel | None = None,
         reward: RewardTransform | None = None,
+        imputation: CensoredImputer | None = None,
         standardize: bool = True,
         max_history: int | None = None,
         **kwargs: Any,
@@ -159,6 +174,9 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         self.partitioner = partitioner if partitioner is not None else SinglePartition()
         self.confidence = confidence
         self.reward = reward if reward is not None else RewardTransform()
+        if imputation is not None and not isinstance(imputation, CensoredImputer):
+            raise TypeError("imputation must be a CensoredImputer or None.")
+        self.imputation = imputation
         self.standardize = bool(standardize)
         self.max_history = max_history
 
@@ -204,11 +222,15 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         # The warm start is fully observed: every arm learns from every row.
         self._warm_cutoff = self.budget if self.budget is not None else math.inf
         self._n_warm = len(features)
+        self._check_imputation(self._warm_cutoff)
         perf = performance.reindex(columns=self.algorithms)
         for i in range(len(features)):
             row = perf.iloc[i]
             runtimes = {str(a): float(v) for a, v in row.items() if pd.notna(v)}
-            rewards = self.reward(runtimes, (), self._warm_cutoff, self.maximize)
+            if self.imputation is None:
+                rewards = self.reward(runtimes, (), self._warm_cutoff, self.maximize)
+            else:
+                rewards = self._imputed_rewards(Z[i], runtimes, (), self._warm_cutoff)
             self._learn(Z[i], rewards, self._observation_weight(Z[i], None))
 
     # ------------------------------------------------------------- decisions
@@ -255,14 +277,91 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         return self.context_.transform(features)[0]
 
     def _rewards(self, observation: Observation) -> dict[str, float]:
-        """Observation -> reward per executed arm."""
+        """Observation -> reward per executed arm (censored runs imputed if
+        ``imputation`` is set)."""
         self._check_reward_scale(observation.cutoff)
-        return self.reward(
+        if self.imputation is None:
+            return self.reward(
+                observation.runtimes,
+                observation.censored,
+                observation.cutoff,
+                self.maximize,
+            )
+        self._check_imputation(observation.cutoff)
+        return self._imputed_rewards(
+            self._feature_vector(observation.features),
             observation.runtimes,
             observation.censored,
             observation.cutoff,
-            self.maximize,
         )
+
+    def _imputed_rewards(
+        self,
+        z: np.ndarray,
+        runtimes: Mapping[str, float],
+        censored: Collection[str],
+        cutoff: float,
+    ) -> dict[str, float]:
+        """
+        Rewards with censored runs imputed (Tornede et al., Alg. 1 l. 17-20).
+
+        A run is censored if it is marked so or its runtime reached the
+        cutoff. Its true reward is at most ``bound = solved_reward(min(runtime,
+        cutoff))``. The imputation rule works on the negated reward (so the
+        true value is ``>= -bound``) with the belief ``N(-mean, sd^2)`` of the
+        arm's current posterior at ``z``. A ``NaN`` from the rule drops the arm.
+        """
+        assert self.imputation is not None
+        unsolved = [
+            a
+            for a in self.algorithms
+            if a in runtimes and (a in censored or float(runtimes[a]) >= cutoff)
+        ]
+        solved = {a: v for a, v in runtimes.items() if a not in unsolved}
+        rewards = self.reward(solved, (), cutoff, self.maximize)
+        if not unsolved:
+            return rewards
+        bound = np.array(
+            [
+                -self.reward.solved_reward(min(float(runtimes[a]), cutoff), cutoff)
+                for a in unsolved
+            ]
+        )
+        mean = np.zeros(len(unsolved))
+        sd = np.zeros(len(unsolved))
+        if self.imputation.USES_MODEL:
+            x = model_input(z, self.contextual)[0]
+            cell = self.partitioner.assign(z)
+            for k, arm in enumerate(unsolved):
+                posterior = self._posterior_for(arm, z, cell)
+                mean[k] = -posterior.mean(x)
+                sd[k] = posterior.width(x)
+                if self.imputation.PREDICTIVE:
+                    sd[k] = math.sqrt(sd[k] ** 2 + float(posterior.noise_var))
+        values = self.imputation(bound, mean, sd, self.rng_)
+        for arm, value in zip(unsolved, values):
+            if not np.isnan(value):
+                rewards[arm] = -float(value)
+        return rewards
+
+    def _check_imputation(self, cutoff: float) -> None:
+        """Raise if ``imputation`` cannot work with the reward / posterior."""
+        if self.imputation is None:
+            return
+        if self.maximize:
+            raise ValueError("Censored imputation is for runtime minimization.")
+        kind = self.reward.resolve(cutoff, self.maximize)
+        if kind not in ("log", "par"):
+            raise ValueError(
+                f"Censored imputation needs the 'log' or 'par' reward, not {kind!r}."
+            )
+        if self.imputation.PREDICTIVE and not hasattr(
+            self.posterior(self.input_dim_), "noise_var"
+        ):
+            raise ValueError(
+                f"{self.imputation!r} needs a posterior with noise_var "
+                "(GaussianPosterior or BayesianLinearRegression)."
+            )
 
     def _observation_weight(
         self, z: np.ndarray, observation: Observation | None

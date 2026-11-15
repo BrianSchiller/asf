@@ -266,6 +266,7 @@ the meaning of one bumps it. `load` rejects newer versions.
 | `asf.online.prediction` | `PredictionRecord` |
 | `asf.online.gate` | extra-run gates |
 | `asf.online.buffer` | sliding window with partially observed performance |
+| `asf.online.imputation` | rules for learning from censored runs (Tornede et al.) |
 | `asf.online.drift` | drift detectors (when to reconfigure) and drift statistics |
 | `asf.online.retraining` | retrain policies and drift responses |
 | `asf.online.selectors` | online selectors (how to reconfigure) |
@@ -327,6 +328,15 @@ selector = OnlineEPMSelector(
   `par_factor * cutoff`. `target_transform="log10"` trains on log runtimes
   instead of the raw scale. `predicted_runtime` is the predicted PAR10 value
   of the chosen algorithm.
+* **Censored imputation** (Tornede et al., 2022; not in the paper):
+  `imputation=CutoffImputer()` trains on the budget instead of the penalty,
+  `DropCensored()` leaves unsolved runs out, and `ExpectedImputer()` runs
+  Schmee-Hahn (ASF's `schmee_hahn_impute`): fit, replace each unsolved
+  target by the mean of `N(prediction, sigma^2)` beyond the cutoff, refit,
+  until nothing changes by more than `imputation_tol` (at most
+  `imputation_max_iter` fits). Use it with `target_transform="log10"`; it
+  costs up to `imputation_max_iter + 1` fits per update for every algorithm
+  with unsolved runs. `SampledImputer` has no batch version here.
 * **Updates**: models are refitted every `retrain_every=10` new data points
   (extra runs count), only those whose data changed. Algorithms without data
   are tried first; a model is fitted on an algorithm's first observation. By

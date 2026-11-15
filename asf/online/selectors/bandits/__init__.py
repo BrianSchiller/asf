@@ -21,8 +21,11 @@ Non-stationary UCB presets: :class:`DiscountedUCBSelector` (DS-UCB) and
 Clustered: :class:`DTSOCSelector` (DTS-OC, online k-means + discounted Beta TS
 per cluster, fuzzy-penalised updates).
 
+Censored runs: ``imputation=`` (see :mod:`asf.online.imputation`, Tornede et
+al.) replaces the PAR-k penalty by an imputed reward.
+
 Planned extensions: flow-based ``ConfidenceModel`` and Normal-Inverse-Gamma
-``Posterior`` (FC-TS), censored-runtime imputation via ``_rewards`` (Tornede et al.).
+``Posterior`` (FC-TS).
 """
 
 from asf.online.selectors.bandits.base import AbstractContextualBandit

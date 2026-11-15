@@ -4,6 +4,7 @@ Online algorithm selection under distribution drift.
 Layout:
     base         -- AbstractOnlineSelector, Observation (propose/observe contract)
     buffer       -- sliding window over partially observed instances
+    imputation   -- rules for learning from censored (timed-out) runs
     drift        -- drift detectors (WHEN to reconfigure)
     retraining   -- retrain policies tying detectors to selectors
     selectors    -- online selectors (HOW to reconfigure)

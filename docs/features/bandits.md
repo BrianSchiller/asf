@@ -66,6 +66,7 @@ be swapped independently:
 | `partitioner` (separate models per region) | `SinglePartition` | `OnlineKMeans`, your own `Partitioner` (trees, ...) |
 | `confidence` (weight fixed when an observation arrives) | none | `GaussianConfidence`, your own `ConfidenceModel` |
 | `reward` | `RewardTransform("auto")`: `-log10(PAR10 + 1)` | `"unit"` (the same in `[0, 1]`, for Beta posteriors), `"solved"` (binary), `"par"`, `"raw"` |
+| `imputation` (how timed-out runs are learnt from) | none: the PAR10 penalty of `reward` | `CutoffImputer`, `DropCensored`, `ExpectedImputer`, `SampledImputer`; see [Censored runs](#censored-runs) |
 
 Non-stationary variants are compositions, not new classes:
 
@@ -81,6 +82,47 @@ ThompsonSamplingSelector(  # discounted kNN window
 When a trace's weighting is uniform or an exponential discount, each arm's
 posterior is updated incrementally. Otherwise it is refitted from the stored
 history at every decision. Both give the same result where both apply.
+
+## Censored runs
+
+A run that hits its budget is censored: the true runtime is unknown, only that
+it is at least the budget. By default the bandit learns the PAR10 penalty for
+such a run. With `imputation`, it learns an imputed reward instead, following
+Tornede et al. (2022):
+
+```python
+from asf.online.imputation import SampledImputer
+from asf.online.selectors.bandits import LinTSSelector
+
+# Their bj_thompson: censored runs get a posterior draw above the cutoff.
+LinTSSelector(imputation=SampledImputer(), budget=stream.cutoff, random_state=0)
+```
+
+| Rule | Learnt reward of a censored run | Source |
+|---|---|---|
+| `CutoffImputer()` | reward of solving exactly at the budget | eq. 11 |
+| `DropCensored()` | nothing (the arm is not updated) | BlindUCB, eq. 9 |
+| `ExpectedImputer()` | mean of the arm's predictive distribution beyond the budget | Buckley-James, as described in their text |
+| `SampledImputer(max_tries=20)` | a posterior draw beyond the budget, after 20 failed draws the budget | Algorithm 1, lines 17-20, and their code |
+
+* The rule uses the arm's posterior *before* the update, at the current
+  instance. `SampledImputer` draws from the posterior of the mean (their code
+  samples `theta ~ N(theta_hat, sigma A^-1)`); `ExpectedImputer` adds the
+  noise variance, since it fills in an observation.
+* The bound is the budget the run was stopped at (at most the cutoff).
+  Warm-start runs at or above `budget` count as censored too.
+* Imputation works on the reward scale (`"log"` or `"par"`), not on the
+  natural-log runtime of the paper. The direction is the same (a longer
+  runtime is a lower reward), but `noise_var` and `prior_precision` are not
+  on the paper's scale, so their `sigma=1, lambda=0.5` do not carry over.
+* With several traces or cells, the first trace's posterior in the
+  instance's cell is used.
+* `DropCensored` hides that an algorithm times out, so the bandit keeps
+  choosing it in regions where it fails; it is a baseline, not a fix.
+* Scoring stays PAR10: imputation only changes what the bandit learns.
+* Not implemented from the paper: the bias-corrected and randomised LinUCB
+  widths (BClinUCB, RandUCB) and the expected-PAR10 selection rule (`_rev`
+  variants).
 
 ## Tuning notes
 
