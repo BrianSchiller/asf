@@ -36,19 +36,24 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Any, Callable, Collection, Hashable, Mapping, Sequence
+from typing import Any, Callable, Collection, Hashable, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.gate import AbstractExtraRunGate, NeverProbe
 from asf.online.imputation import CensoredImputer
 from asf.online.prediction import PredictionRecord
 from asf.online.selectors.bandits.confidence import ConfidenceModel
 from asf.online.selectors.bandits.context import ContextBuilder, model_input
 from asf.online.selectors.bandits.history import BanditHistory
 from asf.online.selectors.bandits.partitioning import Partitioner, SinglePartition
-from asf.online.selectors.bandits.policies import ExplorationPolicy
+from asf.online.selectors.bandits.policies import (
+    ExplorationPolicy,
+    ThompsonPolicy,
+    UCBPolicy,
+)
 from asf.online.selectors.bandits.posteriors import Posterior
 from asf.online.selectors.bandits.rewards import RewardTransform
 from asf.online.selectors.bandits.weighting import Uniform, Weighting
@@ -64,14 +69,36 @@ AGGREGATES: dict[str, Aggregate] = {
 }
 
 
+def _mean(posterior: Posterior, x: np.ndarray) -> float:
+    """Posterior mean; ``inf`` without data, so greedy tries such arms first."""
+    return posterior.mean(x) if np.isfinite(posterior.width(x)) else math.inf
+
+
 class AbstractContextualBandit(AbstractOnlineSelector):
     """
     Bandit selector over algorithms, assembled from pluggable components.
 
-    Every step it plays exactly one arm (the schedule ``[(arm, 0.0)]``, i.e.
-    run with the scenario cutoff) and learns from all arms reported in the
-    observation. It nominates no extra runs; a ``gate`` can add some (e.g.
-    from ``GateContext.ranked_alternatives()``, ordered by the arm scores).
+    Without a ``gate`` it plays exactly one arm per step (the schedule
+    ``[(arm, 0.0)]``, i.e. run with the scenario cutoff). It learns from all
+    arms reported in the observation, so a gate can add extra runs.
+
+    Prediction record
+    -----------------
+    ``candidates``
+        All other arms by descending policy score (UCB index, Thompson
+        sample): the runner-up first.
+    ``uncertainty``
+        How likely another arm is better, in ``[0, 1]``. Only computed when a
+        gate is set. Thompson Sampling: the share of ``uncertainty_samples``
+        joint posterior draws in which the chosen arm is not the best (ties
+        share the win). UCB: the overlap of the confidence intervals
+        ``mean +- bonus`` of the chosen arm and the first nominee, as
+        intersection over union (1 if either arm has no data). ``None`` for
+        other policies.
+    ``predicted_runtime``
+        The chosen arm's expected reward turned back into a performance value
+        (:meth:`RewardTransform.to_performance`; first trace). ``None`` if
+        the arm has no data or the reward cannot be inverted.
 
     Hooks for subclasses
     --------------------
@@ -134,6 +161,17 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         Standardise features with warm-start statistics.
     max_history : int or None, default=None
         Observations kept per arm in refit mode (``None`` = all).
+    primary : {"policy", "greedy"}, default="policy"
+        ``"policy"``: the primary run is the policy's arm (standard bandit).
+        ``"greedy"``: the primary run is the arm with the best posterior mean
+        (arms without data first) and exploration is left to the extra runs:
+        the nominees are still ordered by the policy score, so the first
+        extra is the arm the policy would have played (or its runner-up if
+        that is the greedy arm). ``scores`` then holds the posterior means.
+        Without a gate this never explores.
+    uncertainty_samples : int, default=32
+        Posterior draws per arm for the Thompson ``uncertainty`` (0 = none).
+        Drawn only when a gate is set, in one vectorised call per arm.
     **kwargs : Any
         Forwarded to :class:`~asf.online.base.AbstractOnlineSelector`
         (e.g. ``budget`` -- the cutoff used to score the warm start --,
@@ -155,9 +193,17 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         imputation: CensoredImputer | None = None,
         standardize: bool = True,
         max_history: int | None = None,
+        primary: Literal["policy", "greedy"] = "policy",
+        uncertainty_samples: int = 32,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if primary not in ("policy", "greedy"):
+            raise ValueError("primary must be 'policy' or 'greedy'.")
+        if uncertainty_samples < 0:
+            raise ValueError("uncertainty_samples must be >= 0.")
+        self.primary = primary
+        self.uncertainty_samples = int(uncertainty_samples)
         self.posterior = posterior
         self.policy = policy
         self.contextual = bool(contextual)
@@ -221,6 +267,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
 
         # The warm start is fully observed: every arm learns from every row.
         self._warm_cutoff = self.budget if self.budget is not None else math.inf
+        self.cutoff_ = self._warm_cutoff  # replaced by the stream's cutoff
         self._n_warm = len(features)
         self._check_imputation(self._warm_cutoff)
         perf = performance.reindex(columns=self.algorithms)
@@ -239,16 +286,85 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         x = model_input(z, self.contextual)[0]
         cell = self.partitioner.assign(z)
         t = self._policy_time(z, cell)
-        scores = np.array([self._score(arm, z, x, cell, t) for arm in self.algorithms])
+        # Built once: decision, uncertainty and prediction share the posteriors.
+        posteriors = [
+            [self._posterior_for(arm, z, cell, trace) for trace in self.traces]
+            for arm in self.algorithms
+        ]
+        scores = np.array([self._score(p, x, t) for p in posteriors])
+        ranking = np.argsort(-scores, kind="stable")  # by policy score
+        if self.primary == "greedy":
+            scores = np.array(
+                [self._combine([_mean(q, x) for q in p]) for p in posteriors]
+            )
         self.last_scores_ = dict(zip(self.algorithms, scores.tolist()))
         best = np.flatnonzero(scores == scores.max())
-        arm = self.algorithms[int(self.rng_.choice(best))]
+        chosen = int(self.rng_.choice(best))
+        others = [int(i) for i in ranking if i != chosen]
+        uncertainty = None
+        if others and not isinstance(self.gate_, NeverProbe):
+            uncertainty = self._uncertainty(posteriors, chosen, others[0], x, t)
+        model = posteriors[chosen][0]
+        predicted = None
+        if np.isfinite(model.width(x)):
+            predicted = self.reward.to_performance(
+                model.mean(x), self.cutoff_, self.maximize
+            )
+        arm = self.algorithms[chosen]
         return PredictionRecord(
             chosen=arm,
             budget=0.0,
+            predicted_runtime=predicted,
             score=self.last_scores_[arm],
+            uncertainty=uncertainty,
             scores=dict(self.last_scores_),
+            candidates=tuple(self.algorithms[i] for i in others),
         )
+
+    def _default_gate(self) -> AbstractExtraRunGate:
+        """Bandits nominate arms but run one per step unless a gate is given."""
+        return NeverProbe()
+
+    def _uncertainty(
+        self,
+        posteriors: Sequence[Sequence[Posterior]],
+        chosen: int,
+        rival: int,
+        x: np.ndarray,
+        t: float,
+    ) -> float | None:
+        """How likely another arm is better than ``chosen`` (see class docs)."""
+        if isinstance(self.policy, ThompsonPolicy):
+            n = self.uncertainty_samples
+            if n == 0:
+                return None
+            draws = np.column_stack(
+                [
+                    self._combine_draws(
+                        [self.policy.score(q, x, t, self.rng_, n) for q in p]
+                    )
+                    for p in posteriors
+                ]
+            )
+            top = draws == draws.max(axis=1, keepdims=True)
+            return float(1.0 - (top[:, chosen] / top.sum(axis=1)).mean())
+        if isinstance(self.policy, UCBPolicy):
+            lo_c, hi_c = self._interval(posteriors[chosen], x, t)
+            lo_r, hi_r = self._interval(posteriors[rival], x, t)
+            if not np.all(np.isfinite([lo_c, hi_c, lo_r, hi_r])):
+                return 1.0  # an arm without data: anything is possible
+            union = max(hi_c, hi_r) - min(lo_c, lo_r)
+            overlap = min(hi_c, hi_r) - max(lo_c, lo_r)
+            return 1.0 if union <= 0 else max(overlap, 0.0) / union
+        return None
+
+    def _interval(
+        self, posteriors: Sequence[Posterior], x: np.ndarray, t: float
+    ) -> tuple[float, float]:
+        """UCB confidence interval ``mean -+ bonus`` of one arm (traces combined)."""
+        upper = [self.policy.score(q, x, t, self.rng_) for q in posteriors]
+        lower = [2.0 * q.mean(x) - u for q, u in zip(posteriors, upper)]
+        return self._combine(lower), self._combine(upper)
 
     def _observe(self, observation: Observation) -> None:
         z = self._feature_vector(observation.features)
@@ -280,6 +396,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         """Observation -> reward per executed arm (censored runs imputed if
         ``imputation`` is set)."""
         self._check_reward_scale(observation.cutoff)
+        self.cutoff_ = observation.cutoff
         if self.imputation is None:
             return self.reward(
                 observation.runtimes,
@@ -376,14 +493,14 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         """Time ``t`` passed to the policy (UCB1's ``ln t``); default: the clock."""
         return float(self.clock_)
 
-    def _score(
-        self, arm: str, z: np.ndarray, x: np.ndarray, cell: Hashable, t: float
-    ) -> float:
-        """Score of ``arm``: one policy score per trace, then aggregated."""
-        values = [
-            self.policy.score(self._posterior_for(arm, z, cell, trace), x, t, self.rng_)
-            for trace in self.traces
-        ]
+    def _score(self, posteriors: Sequence[Posterior], x: np.ndarray, t: float) -> float:
+        """Score of one arm: one policy score per trace, then aggregated."""
+        return self._combine(
+            [self.policy.score(q, x, t, self.rng_) for q in posteriors]
+        )
+
+    def _combine(self, values: Sequence[float]) -> float:
+        """Combine one value per trace with ``aggregate``."""
         if len(values) == 1:
             return values[0]
         combine = (
@@ -392,6 +509,12 @@ class AbstractContextualBandit(AbstractOnlineSelector):
             else self.aggregate
         )
         return combine(values)
+
+    def _combine_draws(self, draws: Sequence[np.ndarray]) -> np.ndarray:
+        """:meth:`_combine` per draw (``draws``: one array per trace)."""
+        if len(draws) == 1:
+            return draws[0]
+        return np.array([self._combine(v) for v in zip(*draws)])
 
     def _posterior_for(
         self, arm: str, z: np.ndarray, cell: Hashable, trace: str | None = None
