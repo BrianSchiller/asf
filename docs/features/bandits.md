@@ -1,8 +1,9 @@
 # Bandit selectors
 
 `asf.online.selectors.bandits` treats algorithms as the arms of a
-multi-armed bandit. Each instance runs exactly one algorithm, and the selector
-learns only from that run.
+multi-armed bandit. By default each instance runs exactly one algorithm. With
+an extra-run gate a second algorithm can run too, and the bandit learns from
+every run it sees (see [Extra runs](#extra-runs)).
 
 ## Baselines
 
@@ -82,6 +83,59 @@ ThompsonSamplingSelector(  # discounted kNN window
 When a trace's weighting is uniform or an exponential discount, each arm's
 posterior is updated incrementally. Otherwise it is refitted from the stored
 history at every decision. Both give the same result where both apply.
+
+## Extra runs
+
+Bandits fill the prediction record, so the gates of
+[online selection](online_selection.md#extra-run-gate) work on them:
+
+```python
+from asf.online.gate import AlwaysProbe, UncertaintyGate
+from asf.online.selectors import LinTSSelector
+
+# a second arm on the 20% most uncertain recent instances
+LinTSSelector(gate=UncertaintyGate(rate=0.2, random_state=0), budget=cutoff, random_state=0)
+```
+
+| Field | Bandit value |
+|---|---|
+| `candidates` | all other arms by descending policy score (UCB index, Thompson sample): the runner-up first |
+| `uncertainty` | how likely another arm is better, in `[0, 1]` (below) |
+| `predicted_runtime` | the chosen arm's expected reward turned back into a runtime (`RewardTransform.to_performance`) |
+
+* **Thompson Sampling:** `uncertainty_samples=32` joint posterior draws; the
+  uncertainty is the share of draws in which the chosen arm is not the best.
+  Ties share the win, so `K` arms without data give `(K - 1) / K`.
+* **UCB:** the overlap of the confidence intervals `mean ± bonus` of the
+  chosen arm and the runner-up, as intersection over union: 0 for disjoint
+  intervals, 1 for identical ones or if either arm has no data.
+* The uncertainty is only computed when a gate is set. Without one
+  (default: `NeverProbe`) the bandit draws nothing extra and behaves as
+  before. The draws are one numpy call per arm on the posteriors the decision
+  already built; `uncertainty_samples=0` turns them off.
+* `predicted_runtime` is a predicted PAR10 value, since timeouts are learnt
+  with their penalty, and through the log reward a geometric mean. It is
+  `None` for an arm without data and for the `"solved"` reward. With it,
+  `TimeoutRiskGate` and `LogRuntimeResidual` work on bandits.
+* Both arms update their posteriors and the clock advances once per
+  instance. A timed-out extra run is penalised or imputed like any other.
+* With several traces the uncertainty uses the combined scores and
+  `predicted_runtime` the first trace.
+
+### Exploring with the extra run
+
+When the user gets the best result of all scheduled runs, the primary run
+does not have to explore. `primary="greedy"` plays the arm with the best
+posterior mean (arms without data first) and leaves exploration to the extra
+run: the nominees stay ordered by the policy score, so the first extra is the
+arm Thompson Sampling or UCB would have played, or its runner-up if that is
+the greedy arm.
+
+```python
+ThompsonSamplingSelector(primary="greedy", gate=AlwaysProbe(1), budget=cutoff, random_state=0)
+```
+
+`scores` then holds the posterior means. Without a gate this never explores.
 
 ## Censored runs
 
