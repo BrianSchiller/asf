@@ -86,6 +86,12 @@ class ThompsonPolicy(ExplorationPolicy):
         self.scale = float(scale)
 
     def score(
-        self, posterior: Posterior, x: np.ndarray, t: float, rng: np.random.Generator
-    ) -> float:
-        return posterior.sample(x, rng, self.scale)
+        self,
+        posterior: Posterior,
+        x: np.ndarray,
+        t: float,
+        rng: np.random.Generator,
+        size: int | None = None,
+    ) -> float | np.ndarray:
+        """One draw, or ``size`` draws at once (for the decision uncertainty)."""
+        return posterior.sample(x, rng, self.scale, size)

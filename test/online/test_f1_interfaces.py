@@ -184,8 +184,8 @@ def test_gate_can_add_extras_to_a_bandit_and_answers_are_cleaned() -> None:
     steps = run_prequential(sel, three_algo_stream(), n_warmstart=5).steps
     assert (steps["n_runs"] == 3).all()
     ctx = gate.contexts[3]
-    assert ctx.step == 3 and ctx.candidates == ()
     alternatives = ctx.ranked_alternatives()
+    assert ctx.step == 3 and ctx.candidates == alternatives  # A4: nominees
     assert sorted(alternatives + (ctx.prediction.chosen,)) == ["a", "b", "c"]
     scores = ctx.prediction.scores
     assert scores is not None

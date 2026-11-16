@@ -72,9 +72,11 @@ and keeps it as `selector.last_prediction_`.
 | `extras` | Extra algorithms actually scheduled (set by the base class) |
 
 Built-in selectors: the Rook selector fills `score`/`scores` with pairwise
-votes and nominates its `n_additional` sampled algorithms; bandits fill them
-with the policy scores (UCB index, Thompson sample) and nominate nothing.
-`predicted_runtime` and `uncertainty` are `None` for both.
+votes and nominates its `n_additional` sampled algorithms, and `uncertainty`
+is `None`. Bandits fill `score`/`scores` with the policy scores (UCB index,
+Thompson sample), nominate all other arms by descending score, and fill
+`uncertainty` and `predicted_runtime` (see [Bandit selectors](bandits.md#extra-runs)).
+`predicted_runtime` is `None` for the Rook selector.
 
 ### Extra-run gate
 
@@ -115,10 +117,10 @@ instances with the highest ratings:
 
 | Gate | Rates an instance by | Needs |
 |---|---|---|
-| `UncertaintyGate` | the selector's uncertainty | `PredictionRecord.uncertainty` (frugal pairwise, EPM) |
+| `UncertaintyGate` | the selector's uncertainty | `PredictionRecord.uncertainty` (frugal pairwise, EPM, bandits) |
 | `CloseCallGate` | how close the two best entries of `scores` are (vote gap, predicted-runtime gap) | `PredictionRecord.scores` (pairwise selectors, EPM, bandits) |
 | `UnfamiliarityGate` | the detector's per-instance score | a feature detector with `score` (PCA, KS ensemble) |
-| `TimeoutRiskGate` | the predicted runtime of the chosen algorithm | `PredictionRecord.predicted_runtime` (EPM) |
+| `TimeoutRiskGate` | the predicted runtime of the chosen algorithm | `PredictionRecord.predicted_runtime` (EPM, bandits) |
 
 `UncertaintyGate` is in `asf.online.gate`, the others in
 `asf.online.gate_criteria`. Each takes exactly one of two rules:
@@ -159,8 +161,8 @@ TimeoutRiskGate(threshold=0.8 * cutoff)      # fixed: predicted runtime in secon
   `context.ranked_alternatives()`. This also applies if the frugal selector's
   `timeout_filter` removed all nominees.
 * `TimeoutRiskGate` needs no cutoff under a rate (ranking by predicted
-  runtime is ranking by runtime/cutoff). `OnlineEPMSelector` predicts PAR10,
-  so its predictions can exceed the cutoff.
+  runtime is ranking by runtime/cutoff). `OnlineEPMSelector` and the bandits
+  predict PAR10, so their predictions can exceed the cutoff.
 * The criterion's rating is not written to the result files, except where it
   is a logged column anyway (`pred_uncertainty`, `instance_score`,
   `pred_runtime`).

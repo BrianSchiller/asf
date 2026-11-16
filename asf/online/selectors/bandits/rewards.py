@@ -73,6 +73,46 @@ class RewardTransform:
             return -float(runtime) / (self.par_factor * cutoff)
         raise ValueError(f"solved_reward is defined for 'log' and 'par', not {kind!r}.")
 
+    def to_performance(
+        self, reward: float, cutoff: float, maximize: bool
+    ) -> float | None:
+        """
+        Turn a reward back into a performance value (the inverse transform).
+
+        Used for ``PredictionRecord.predicted_runtime``: applied to an arm's
+        expected reward it gives the predicted PAR-k value on the raw scale
+        (unsolved runs were learnt with their penalty). For the ``"log"`` and
+        ``"unit"`` rewards this is a geometric rather than an arithmetic mean.
+
+        Parameters
+        ----------
+        reward : float
+            A reward, e.g. the posterior mean of an arm.
+        cutoff : float
+            The scenario cutoff (needed for ``"par"`` and ``"unit"``).
+        maximize : bool
+            Whether the scenario maximizes a quality score.
+
+        Returns
+        -------
+        float or None
+            The performance (runtimes are at least 0); ``None`` if the reward
+            cannot be inverted (``"solved"``, or no finite cutoff).
+        """
+        kind = self.resolve(cutoff, maximize)
+        if kind == "raw":
+            return float(reward) if maximize else -float(reward)
+        worst = self.par_factor * cutoff
+        if kind == "log":
+            value = 10.0 ** min(-reward, 300.0) - 1.0  # capped: no overflow
+        elif kind == "par" and math.isfinite(cutoff):
+            value = -reward * worst
+        elif kind == "unit" and math.isfinite(cutoff):
+            value = (worst + 1.0) ** (1.0 - reward) - 1.0
+        else:
+            return None
+        return max(float(value), 0.0)
+
     def __call__(
         self,
         runtimes: Mapping[str, float],

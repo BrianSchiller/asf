@@ -62,8 +62,12 @@ class Posterior(ABC):
         """Posterior standard deviation of the expected reward at ``x``."""
 
     def sample(
-        self, x: np.ndarray, rng: np.random.Generator, scale: float = 1.0
-    ) -> float:
+        self,
+        x: np.ndarray,
+        rng: np.random.Generator,
+        scale: float = 1.0,
+        size: int | None = None,
+    ) -> float | np.ndarray:
         """
         Draw the expected reward at ``x`` from the (scaled) posterior.
 
@@ -71,11 +75,14 @@ class Posterior(ABC):
         prediction at a single ``x`` is equivalent in distribution to drawing
         ``N(mean(x), (scale * width(x))**2)``, which is what is done here.
         Non-Gaussian posteriors (e.g. Normal-Inverse-Gamma) override this.
+        With ``size`` an array of that many draws is returned (one numpy call).
         """
         sd = self.width(x)
-        if not np.isfinite(sd):
-            return float("inf")  # no information yet: always worth a try
-        return self.mean(x) + scale * sd * float(rng.standard_normal())
+        if not np.isfinite(sd):  # no information yet: always worth a try
+            return float("inf") if size is None else np.full(size, np.inf)
+        if size is None:
+            return self.mean(x) + scale * sd * float(rng.standard_normal())
+        return self.mean(x) + scale * sd * rng.standard_normal(size)
 
 
 class BayesianLinearRegression(Posterior):
@@ -289,7 +296,12 @@ class BetaPosterior(Posterior):
         return float(np.sqrt(a * b / ((a + b) ** 2 * (a + b + 1))))
 
     def sample(
-        self, x: np.ndarray, rng: np.random.Generator, scale: float = 1.0
-    ) -> float:
+        self,
+        x: np.ndarray,
+        rng: np.random.Generator,
+        scale: float = 1.0,
+        size: int | None = None,
+    ) -> float | np.ndarray:
         """Draw from the Beta posterior (``scale`` is not used)."""
-        return float(rng.beta(*self._params()))
+        draws = rng.beta(*self._params(), size)
+        return float(draws) if size is None else draws
