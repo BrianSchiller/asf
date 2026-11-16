@@ -276,6 +276,51 @@ selector = OnlinePairwiseSelector(detector=detector, reference_period=100)
   uses only the newest instances as reference (the paper's behaviour) and
   avoids this, but a return to an earlier regime then counts as drift again.
 
+`OneClassDriftDetector` is OCDD (Gözüaçık and Can, 2021): a one-class SVM
+learns what the current instances look like, and drift is signalled when too
+many recent instances fall outside of it. It only looks at features:
+
+```python
+from asf.online.drift import OneClassDriftDetector
+
+detector = OneClassDriftDetector(
+    window_size=250, threshold=0.3, baseline="cross_validated"
+)
+selector = OnlinePairwiseSelector(detector=detector, reference_period=100)
+```
+
+* The SVM is trained on the reference data (the selector's buffer) and labels
+  every new instance as typical or outlier. Once `window_size` instances have
+  arrived, the outlier share of the last `window_size` instances is checked
+  after every instance. The signal's `score` is that share minus
+  `baseline_share_` (drift at `threshold` or more).
+* On drift the detector keeps the newest `threshold * window_size` instances
+  and retrains the SVM on them, with or without a drift response. The next
+  check follows once the window is full again. Because it re-references
+  itself, `reset(...)` does nothing: the selector's request to refit on its
+  buffer after a retrain is ignored.
+* The defaults are the paper's (`window_size=250`, `threshold=0.3`,
+  `nu=0.5`, `baseline="none"`). With them the detector signals every
+  `window_size - threshold * window_size` instances even without drift: a
+  one-class SVM with `nu=0.5` calls about half of all typical instances
+  outliers, which is above the threshold. Lowering `nu` only helps for few
+  features, since an SVM retrained on the few kept instances rejects much of
+  the typical data as well.
+* `baseline="cross_validated"` (not in the paper) corrects this. At every
+  training it estimates by cross-validation which share of typical instances
+  the SVM calls outliers (`baseline_share_`), and drift is signalled if the
+  window exceeds that share by `threshold`. Use it unless the paper's exact
+  behaviour is wanted.
+* `score(features)` is the negated SVM decision value (positive = outside
+  the learned region, larger = further out), for gates that want an
+  out-of-distribution score. Its scale changes with every retraining.
+* Features are median-imputed and standardised before the SVM; both are
+  refitted with every training. The detector is deterministic.
+* Detection takes up to about one window: enough outliers have to
+  accumulate. Like every feature detector it reacts to any change of the
+  feature distribution, whether or not the best algorithm changes, and
+  misses changes in performance that leave the features untouched.
+
 ## Result files (schema v1)
 
 ```python
