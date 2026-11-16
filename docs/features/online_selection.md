@@ -321,6 +321,69 @@ selector = OnlinePairwiseSelector(detector=detector, reference_period=100)
   feature distribution, whether or not the best algorithm changes, and
   misses changes in performance that leave the features untouched.
 
+### ADWIN and EDDM on runtime residuals
+
+`ADWINDetector` and `EDDMDetector` (`asf.online.drift.scalar`) are
+performance-based: they do not look at features but at how far the observed
+runtime of the primary run is from the selector's prediction. They need a
+selector that predicts runtimes (`OnlineEPMSelector`) and a `drift_statistic`:
+
+```python
+import math
+from asf.online.drift import ADWINDetector, EDDMDetector, LogRuntimeResidual
+from asf.online.imputation import ExpectedImputer
+from asf.online.retraining import RetrainResponse
+
+selector = OnlineEPMSelector(
+    target_transform="log10", imputation=ExpectedImputer(),  # predict runtimes, not PAR10
+    detector=ADWINDetector(value_range=(-math.log(10), math.log(10)), direction="up"),
+    # or: detector=EDDMDetector(error_threshold=math.log(2)),
+    drift_statistic=LogRuntimeResidual(),
+    drift_response=RetrainResponse(),
+)
+```
+
+* **ADWIN** (Bifet and Gavaldà, 2007) keeps a window of recent residuals and
+  drops its oldest part whenever two parts of the window have clearly
+  different means; a shrinking window is the drift signal. `delta` (default
+  0.002) bounds the false alarm rate. This is the exact algorithm (Figure 1
+  of the paper), not the approximate ADWIN2; an update costs one pass over
+  the window. `bound="variance"` is the test the paper uses in practice,
+  `"hoeffding"` the rigorous, more conservative one. The signal's `score` is
+  the window mean.
+* ADWIN assumes values in `[0, 1]`. `value_range=(low, high)` rescales other
+  ranges and clips values outside. The default is the paper's `(0, 1)`; for
+  log residuals set it, e.g. to a factor of 10 either way as above.
+* `direction="up"` (not in the paper) signals only when the residuals rose,
+  i.e. the algorithm became slower than predicted. The default `"both"` also
+  signals when the predictions improve, e.g. while a model is still learning.
+* **EDDM** (Baena-García et al., 2006) watches the distance between errors
+  and signals when errors get closer together: warning if `p + 2s` of the
+  distances falls below `alpha=0.95` of its maximum, drift below
+  `beta=0.90`, tested once `min_errors=30` errors were seen. EDDM is defined
+  for classification errors; here a value above `error_threshold` is an
+  error (default `log(2)`: more than twice as slow as predicted). The
+  signal's `score` is the ratio; `drift_warning` is logged per step.
+* **Timeouts.** A censored run only gives a lower bound of the residual
+  (`LogRuntimeResidual(censored="emit")`). Both detectors pass it through a
+  rule from `asf.online.imputation` first (`imputation=`):
+
+  | Rule | A censored residual becomes |
+  |---|---|
+  | `None` / `CutoffImputer()` (default) | the bound itself |
+  | `DropCensored()` | nothing; the instance is skipped |
+  | `ExpectedImputer()` | the expected value above the bound |
+  | `SampledImputer()` | a random draw above the bound (`random_state`) |
+
+  The last two use a normal belief with the mean and spread of the uncensored
+  residuals seen since the last reset; without two such values they return
+  the bound. An imputed value is never below the bound. With `DropCensored`
+  a drift that turns solved runs into timeouts is invisible. For EDDM the
+  threshold is applied after the rule, so with the default rule a timeout is
+  an error only if its bound is above the threshold.
+* After a retrain or reset the detector starts from scratch. Without a drift
+  response ADWIN keeps its shrunken window and EDDM restarts itself.
+
 ## Result files (schema v1)
 
 ```python
