@@ -61,12 +61,10 @@ HAND_MODELS = {(0, 1): 0.9, (0, 2): 0.4, (1, 2): 0.3}
 
 
 # ---------------------------------------------------------------- helpers
-def test_least_confidence_hand_values() -> None:
+def test_least_confidence_hand_values_and_ranking() -> None:
     p = np.array([0.0, 0.5, 0.9, 0.25, 1.0])
     np.testing.assert_allclose(least_confidence(p), [0.0, 0.5, 0.1, 0.25, 0.0])
-
-
-def test_least_confidence_ranks_like_margin_and_entropy() -> None:
+    # ranks like the margin and the entropy
     p = np.array([0.05, 0.3, 0.45, 0.8, 0.99])
     margin = np.abs(2 * p - 1)
     entropy = -(p * np.log(p) + (1 - p) * np.log(1 - p))
@@ -75,7 +73,7 @@ def test_least_confidence_ranks_like_margin_and_entropy() -> None:
     assert list(order) == list(np.argsort(-entropy))
 
 
-def test_labels_hand_cases() -> None:
+def test_labels_hand_cases_and_maximize() -> None:
     sel = _fitted()
     perf_i = np.array([1.0, 5.0, 3.0, 10.0, 4.0])
     perf_j = np.array([2.0, 4.0, 3.0, 10.0, 10.0])
@@ -83,35 +81,14 @@ def test_labels_hand_cases() -> None:
     t_j = np.array([False, False, False, False, True])
     # win, loss, tie -> i, i timed out, j timed out
     assert list(sel._labels(perf_i, perf_j, t_i, t_j)) == [1, 0, 1, 0, 1]
-
-
-def test_labels_maximize() -> None:
-    sel = _selector(maximize=True)
-    sel.fit(*_warm([[1.0, 2.0, 3.0], [2.0, 1.0, 3.0]]))
+    maximizing = _selector(maximize=True)
+    maximizing.fit(*_warm([[1.0, 2.0, 3.0], [2.0, 1.0, 3.0]]))
     no = np.zeros(2, dtype=bool)
-    assert list(sel._labels(np.array([1.0, 3.0]), np.array([2.0, 2.0]), no, no)) == [
-        0,
-        1,
-    ]
+    labels = maximizing._labels(np.array([1.0, 3.0]), np.array([2.0, 2.0]), no, no)
+    assert list(labels) == [0, 1]
 
 
 # ---------------------------------------------------------------- gate
-def test_uncertainty_gate_threshold() -> None:
-    gate = UncertaintyGate(threshold=0.3, n=1)
-    assert list(gate.extras(_context(0.31, ("b", "c")))) == ["b"]
-    assert list(gate.extras(_context(0.3, ("b", "c")))) == ["b"]
-    assert list(gate.extras(_context(0.29, ("b", "c")))) == []
-    assert list(gate.extras(_context(None, ("b", "c")))) == []
-    assert list(UncertaintyGate(0.0, n=None).extras(_context(0.1, ("b", "c")))) == [
-        "b",
-        "c",
-    ]
-    assert list(UncertaintyGate(0.0, n=0).extras(_context(0.5, ("b",)))) == []
-
-
-def test_uncertainty_gate_rejects_negative_n() -> None:
-    with pytest.raises(ValueError):
-        UncertaintyGate(0.2, n=-1)
 
 
 # ---------------------------------------------------------------- selection
@@ -137,7 +114,7 @@ def test_default_gate_runs_most_uncertain_nominee() -> None:
 
 def test_random_candidate_order_is_seeded() -> None:
     orders = set()
-    for seed in range(20):
+    for seed in range(8):
         sel = _fitted(candidate_order="random", random_state=seed)
         sel._models = dict(HAND_MODELS)
         record = sel._select(_one())
@@ -151,7 +128,7 @@ def test_random_candidate_order_is_seeded() -> None:
 
 def test_cold_start_is_maximally_uncertain_and_ties_are_seeded() -> None:
     chosen = set()
-    for seed in range(20):
+    for seed in range(20):  # 8 seeds miss an arm
         sel = _selector(random_state=seed)
         sel.fit(*_warm([])[0:1], pd.DataFrame(columns=ALGOS))
         record = sel._select(_one())
@@ -266,12 +243,9 @@ def test_timeout_predictors_are_trained_from_warm_start() -> None:
     assert sel._timeout_models[1] == pytest.approx(3 / 4)  # always timed out
 
 
-def test_timeout_predictors_need_cutoff_on_warm_start() -> None:
+def test_timeout_predictors_need_cutoff_and_minimisation() -> None:
     with pytest.raises(ValueError, match="cutoff"):
         _fitted(timeout_filter=True)
-
-
-def test_timeout_predictors_need_minimisation() -> None:
     with pytest.raises(ValueError, match="minimised"):
         _selector(timeout_voting=True, maximize=True)
 

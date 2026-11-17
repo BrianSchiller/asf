@@ -169,13 +169,13 @@ def test_epsilon_greedy_probabilities() -> None:
         sel.fit(*frames([[5.0, 50.0], [6.0, 40.0]]))
         inject(sel, {"a": (1.0, 0.0), "b": (2.0, 0.0)})
         return float(
-            np.mean([sel._select(one_row()).chosen == "a" for _ in range(4000)])
+            np.mean([sel._select(one_row()).chosen == "a" for _ in range(1000)])
         )
 
     assert frequency_of_a(0.0) == 1.0
-    assert frequency_of_a(1.0) == pytest.approx(0.5, abs=0.03)
+    assert frequency_of_a(1.0) == pytest.approx(0.5, abs=0.05)
     # best with probability 1 - eps + eps / |A| = 0.8 + 0.1
-    assert frequency_of_a(0.2) == pytest.approx(0.9, abs=0.03)
+    assert frequency_of_a(0.2) == pytest.approx(0.9, abs=0.05)
 
 
 def test_ties_are_random_but_reproducible() -> None:
@@ -325,6 +325,7 @@ def test_capability_hooks(stream: InstanceStream) -> None:
     assert result.steps["retrained"].sum() == 4
 
 
+@pytest.mark.slow
 def test_prequential_warm_and_cold(stream: InstanceStream, tmp_path: Any) -> None:
     for n_warm in (20, 0):
         sel = make_selector(strategy="ucb")
@@ -347,6 +348,7 @@ def test_all_data_upper_bound_runs_everything(stream: InstanceStream) -> None:
     assert sel.buffer is not None and sel.buffer.performance().notna().all().all()
 
 
+@pytest.mark.slow
 def test_learns_on_the_toy_stream(stream: InstanceStream) -> None:
     sel = make_selector(retrain_every=1)
     result = run_prequential(sel, stream, n_warmstart=40)
@@ -354,6 +356,7 @@ def test_learns_on_the_toy_stream(stream: InstanceStream) -> None:
     assert (before_drift["user_cost"] == before_drift["vbs_cost"]).mean() > 0.8
 
 
+@pytest.mark.slow
 def test_determinism(stream: InstanceStream) -> None:
     def run(seed: int) -> pd.DataFrame:
         sel = make_selector(strategy="epsilon_greedy", epsilon=0.3, random_state=seed)

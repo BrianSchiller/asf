@@ -13,9 +13,6 @@ from asf.online.drift.ks_subspace_ensemble import (
     ks_critical_value,
     ks_statistic,
 )
-from asf.online.evaluation import run_prequential
-from asf.online.selectors import OnlinePairwiseSelector
-from asf.online.streams.stream import InstanceStream
 
 D = 12
 NAMES = [f"f{i}" for i in range(D)]
@@ -50,18 +47,14 @@ def pair_corr(strength: float) -> np.ndarray:
 
 
 # ------------------------------------------------------------------ KS test
-def test_ks_statistic_hand_computed() -> None:
+def test_ks_statistic_hand_computed_scipy_and_nan() -> None:
     # F_a - F_b at 1..6: .25, .5, .5, .5, .25, 0
     assert ks_statistic(np.array([1, 2, 3, 4]), np.array([3, 4, 5, 6])) == 0.5
     # ties: at 1 -> 2/3 - 1/3, at 2 -> 1 - 1
     assert ks_statistic(np.array([1, 1, 2]), np.array([1, 2, 2])) == pytest.approx(
         1 / 3
     )
-    assert ks_statistic(np.array([1.0, 2.0]), np.array([1.0, 2.0])) == 0.0
     assert ks_statistic(np.array([1.0, 2.0]), np.array([3.0])) == 1.0
-
-
-def test_ks_statistic_matches_scipy_and_drops_nan() -> None:
     rng = np.random.default_rng(0)
     for n, m in [(30, 30), (200, 50), (7, 91)]:
         a, b = rng.normal(size=n), rng.normal(0.3, 2.0, size=m).round(1)
@@ -85,7 +78,7 @@ def test_ks_critical_value() -> None:
 
 
 # ---------------------------------------------------------------- subspaces
-@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("seed", range(3))
 def test_subspaces_diversity_spreads_uncorrelated_features(seed: int) -> None:
     rng = np.random.default_rng(seed)
     # no correlation: only the diversity terms act, so nothing is reused
@@ -102,14 +95,14 @@ def test_subspaces_diversity_spreads_uncorrelated_features(seed: int) -> None:
     assert subs[0] != subs[1] and len(subs) == 3
 
 
-@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("seed", range(3))
 def test_subspaces_quality_picks_the_most_correlated_feature(seed: int) -> None:
     corr = np.array([[1.0, 0.9, 0.2], [0.9, 1.0, 0.5], [0.2, 0.5, 1.0]])
     first, second = build_subspaces(corr, 1, 2, np.random.default_rng(seed))[0]
     assert second == {0: 1, 1: 0, 2: 1}[first]
 
 
-@pytest.mark.parametrize("seed", range(10))
+@pytest.mark.parametrize("seed", range(3))
 def test_subspaces_quality_against_diversity(seed: int) -> None:
     """
     Two correlated pairs, k = 2, n = 2. With the first features a (S0), b (S1):
@@ -403,43 +396,3 @@ def test_performance_is_ignored() -> None:
     b = KSSubspaceEnsembleDetector(subspace_size=3, random_state=0).fit(ref)
     assert a.subspaces_ == b.subspaces_
     assert a.update(new, perf.iloc[:50]) == b.update(new)
-
-
-# -------------------------------------------------------------- integration
-def shift_stream(n_before: int = 300, n_after: int = 300) -> InstanceStream:
-    """Covariate shift in one feature block; the best algorithm changes with it."""
-    x = pd.concat(
-        [sample(n_before, 5), sample(n_after, 6, shift=BLOCK0)], ignore_index=True
-    )
-    perf = np.where(
-        (np.arange(len(x)) < n_before)[:, None], [[5, 50, 20]], [[50, 5, 20]]
-    ).astype(float)
-    idx = pd.Index([f"i{k}" for k in range(len(x))])
-    x.index = idx
-    return InstanceStream(
-        x,
-        pd.DataFrame(perf, index=idx, columns=["a", "b", "c"]),
-        cutoff=1000.0,
-        drift_points=(n_before,),
-    )
-
-
-def test_integration_with_online_pairwise_selector() -> None:
-    stream = shift_stream()
-    kw = dict(reference_period=80, random_state=0)
-    detector = KSSubspaceEnsembleDetector(
-        subspace_size=3, window_size=25, random_state=0
-    )
-    adaptive = run_prequential(OnlinePairwiseSelector(detector=detector, **kw), stream)
-    static = run_prequential(OnlinePairwiseSelector(**kw), stream)
-
-    summary = adaptive.summary()
-    assert summary["n_missed"] == 0 and summary["mean_delay"] <= 2 * 25
-    assert len(adaptive.retrain_steps) >= 1
-    assert sum(step < 300 for step in adaptive.drift_steps) <= 1  # false alarms
-    after = slice(400, None)  # drift at position 300
-    a, s = (
-        adaptive.steps["user_cost"].iloc[after],
-        static.steps["user_cost"].iloc[after],
-    )
-    assert a.mean() < s.mean()

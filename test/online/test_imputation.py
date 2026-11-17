@@ -43,12 +43,9 @@ def _rng(seed: int = 0) -> np.random.Generator:
 
 
 # ================================================================== rules
-def test_cutoff_returns_bound() -> None:
+def test_cutoff_returns_bound_and_drop_returns_nan() -> None:
     out = CutoffImputer()([1.0, 2.5], [10.0, -3.0], [1.0, 0.0], _rng())
     np.testing.assert_array_equal(out, [1.0, 2.5])
-
-
-def test_drop_returns_nan() -> None:
     out = DropCensored()([1.0, 2.0, 3.0], 0.0, 1.0, _rng())
     assert out.shape == (3,) and np.isnan(out).all()
 
@@ -82,6 +79,8 @@ def test_expected_edge_cases() -> None:
     # far tail stays finite and close to bound + sd^2 / (bound - mean)
     far = imp(40.0, 0.0, 1.0, _rng())[0]
     assert math.isfinite(far) and 40.0 < far < 40.0 + 1.0 / 40.0 + 1e-9
+    with pytest.raises(ValueError):
+        ExpectedImputer()(0.0, 0.0, -1.0, _rng())  # negative sd
 
 
 def test_expected_never_below_bound_and_deterministic() -> None:
@@ -91,11 +90,6 @@ def test_expected_never_below_bound_and_deterministic() -> None:
     b = ExpectedImputer()(bound, mean, sd, _rng(99))
     assert np.all(a >= bound)
     np.testing.assert_array_equal(a, b)
-
-
-def test_expected_rejects_negative_sd() -> None:
-    with pytest.raises(ValueError):
-        ExpectedImputer()(0.0, 0.0, -1.0, _rng())
 
 
 def test_sampled_above_bound_and_seeded() -> None:
@@ -178,23 +172,20 @@ def _censored_obs(runtime: float = BANDIT_CUTOFF) -> Observation:
 WARM_A = [9.0, 99.0]
 
 
-def test_bandit_default_keeps_par10_reward() -> None:
+def test_bandit_rules_update_the_posterior_by_hand() -> None:
+    # default keeps the PAR10 reward; cutoff imputes the bound; drop skips it
     sel = _bandit(None, WARM_A)
     sel.observe(_censored_obs())
     post = _arm(sel, "a")
     assert post.precision == 4.0
     assert post.weighted_sum == pytest.approx(-3.0 - math.log10(10 * 100 + 1))
 
-
-def test_bandit_cutoff_imputation_hand_computed() -> None:
     sel = _bandit(CutoffImputer(), WARM_A)
     sel.observe(_censored_obs())
     post = _arm(sel, "a")
     assert post.precision == 4.0
     assert post.weighted_sum == pytest.approx(-3.0 - math.log10(100 + 1))
 
-
-def test_bandit_drop_leaves_arm_unchanged() -> None:
     sel = _bandit(DropCensored(), WARM_A)
     sel.observe(_censored_obs())
     post = _arm(sel, "a")
@@ -235,10 +226,15 @@ def test_bandit_sampled_falls_back_to_bound() -> None:
     assert _arm(sel, "a").weighted_sum - before == pytest.approx(-math.log10(101.0))
 
 
-def test_bandit_bound_is_the_run_budget() -> None:
+def test_bandit_bound_is_the_run_budget_and_par_reward() -> None:
     sel = _bandit(CutoffImputer(), WARM_A)
     sel.observe(_censored_obs(runtime=30.0))  # stopped at a budget of 30 s
     assert _arm(sel, "a").weighted_sum == pytest.approx(-3.0 - math.log10(31.0))
+
+    sel = _bandit(CutoffImputer(), WARM_A, reward=RewardTransform("par"))
+    before = _arm(sel, "a").weighted_sum
+    sel.observe(_censored_obs(runtime=30.0))
+    assert _arm(sel, "a").weighted_sum - before == pytest.approx(-30.0 / 1000.0)
 
 
 def test_bandit_warm_start_timeouts_are_imputed() -> None:
@@ -251,17 +247,10 @@ def test_bandit_warm_start_timeouts_are_imputed() -> None:
     assert _arm(default_sel, "a").weighted_sum == pytest.approx(-1.0 - math.log10(1001))
 
 
-def test_bandit_par_reward_bound() -> None:
-    sel = _bandit(CutoffImputer(), WARM_A, reward=RewardTransform("par"))
-    before = _arm(sel, "a").weighted_sum
-    sel.observe(_censored_obs(runtime=30.0))
-    assert _arm(sel, "a").weighted_sum - before == pytest.approx(-30.0 / 1000.0)
-
-
-@pytest.mark.parametrize("kind", ["solved", "unit", "raw"])
-def test_bandit_rejects_unsupported_reward(kind: str) -> None:
-    with pytest.raises(ValueError, match="'log' or 'par'"):
-        _bandit(CutoffImputer(), WARM_A, reward=RewardTransform(kind))
+def test_bandit_rejects_unsupported_reward() -> None:
+    for kind in ("solved", "unit", "raw"):
+        with pytest.raises(ValueError, match="'log' or 'par'"):
+            _bandit(CutoffImputer(), WARM_A, reward=RewardTransform(kind))
 
 
 def test_bandit_rejects_maximize_and_wrong_type() -> None:
@@ -271,7 +260,7 @@ def test_bandit_rejects_maximize_and_wrong_type() -> None:
         ThompsonSamplingSelector(imputation="cutoff")  # type: ignore[arg-type]
 
 
-def _timeout_stream(n: int = 300, seed: int = 0) -> InstanceStream:
+def _timeout_stream(n: int = 150, seed: int = 0) -> InstanceStream:
     """Best arm depends on sign(f0); the wrong arm times out (cutoff 100)."""
     rng = np.random.default_rng(seed)
     f0 = rng.choice([-2.0, 2.0], n) + rng.normal(0, 0.3, n)
@@ -363,7 +352,7 @@ def _fitted_epm(**kwargs: Any) -> OnlineEPMSelector:
     return sel
 
 
-def test_epm_cutoff_targets() -> None:
+def test_epm_cutoff_and_drop_targets() -> None:
     sel = _fitted_epm(imputation=CutoffImputer())
     out = sel._training_targets(TARGET_PERF, TARGET_CENS)
     expected = np.array([[5.0, 100.0], [100.0, np.nan], [100.0, 7.0], [30.0, 8.0]])
@@ -373,8 +362,6 @@ def test_epm_cutoff_targets() -> None:
         sel._training_targets(TARGET_PERF, TARGET_CENS), np.log10(expected)
     )
 
-
-def test_epm_drop_targets() -> None:
     sel = _fitted_epm(imputation=DropCensored())
     out = sel._training_targets(TARGET_PERF, TARGET_CENS)
     expected = np.array([[5.0, 100.0], [np.nan, np.nan], [np.nan, 7.0], [np.nan, 8.0]])

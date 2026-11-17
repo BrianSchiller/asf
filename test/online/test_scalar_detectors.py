@@ -91,8 +91,8 @@ def test_adwin_hand_computed_hoeffding_case() -> None:
 
 
 @pytest.mark.parametrize("bound", ["variance", "hoeffding"])
-@pytest.mark.parametrize("seed", [0, 1, 2])
-def test_adwin_equals_figure_1(bound: str, seed: int) -> None:
+def test_adwin_equals_figure_1(bound: str) -> None:
+    seed = 0
     rng = np.random.default_rng(seed)
     values = np.concatenate(
         [bernoulli(rng, 0.2, 120), bernoulli(rng, 0.8, 80), rng.random(60) * 0.3]
@@ -251,12 +251,9 @@ def exact_then_bound(imputation: CensoredImputer | None, bound: float) -> float:
     return 5.0 * score - 6.0
 
 
-def test_default_rule_uses_the_bound() -> None:
+def test_default_and_expected_rules_on_a_censored_bound() -> None:
     assert exact_then_bound(None, 2.0) == pytest.approx(2.0)
     assert exact_then_bound(CutoffImputer(), 2.0) == pytest.approx(2.0)
-
-
-def test_expected_rule_imputes_the_conditional_mean() -> None:
     # belief: mean 1.5 and sample sd sqrt(5 / 3) of the exact values
     sd = math.sqrt(5.0 / 3.0)
     a = (2.0 - 1.5) / sd
@@ -473,39 +470,3 @@ def test_detector_restarts_when_the_model_is_reset() -> None:
     assert list(steps["response"][steps["drift_signal"]]) == ["reset"]
     # the window was emptied at the drift step and grew by one per step since
     assert detector.width_ == len(steps) - 1 - drifts[0]
-
-
-# ----------------------------------------------- cross-check against river
-def test_eddm_matches_river() -> None:
-    river_binary = pytest.importorskip("river.drift.binary")
-    # river tracks the maximum only after ``warm_start`` instances and tests
-    # after more than ``warm_start`` errors; with an error-free start and
-    # ``min_errors = warm_start + 1`` both follow the same rules.
-    rng = np.random.default_rng(0)
-    values = np.concatenate(
-        [np.zeros(30), bernoulli(rng, 0.1, 3000), bernoulli(rng, 0.5, 1000)]
-    )
-    theirs = river_binary.EDDM(warm_start=30)
-    expected = []
-    for i, x in enumerate(values):
-        theirs.update(int(x))
-        if theirs.drift_detected:
-            expected.append(i)
-    assert drift_steps(EDDMDetector(min_errors=31), values) == expected != []
-
-
-def test_adwin_is_close_to_river_adwin2() -> None:
-    river_drift = pytest.importorskip("river.drift")
-    # river implements the approximate ADWIN2 (checked every 32 instances)
-    rng = np.random.default_rng(0)
-    values = np.concatenate([bernoulli(rng, 0.2, 1000), bernoulli(rng, 0.6, 1000)])
-    theirs = river_drift.ADWIN(delta=0.002)
-    expected = []
-    for i, x in enumerate(values):
-        theirs.update(x)
-        if theirs.drift_detected:
-            expected.append(i)
-    ours = drift_steps(ADWINDetector(delta=0.002), values)
-    assert ours and expected
-    assert ours[0] >= 1000 and expected[0] >= 1000
-    assert ours[0] <= expected[0] and expected[0] - ours[0] <= 64

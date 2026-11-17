@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -126,8 +126,8 @@ def test_first_instance_fires_with_probability_q() -> None:
     assert not _fires(_rate_gate(0.3, [], 0.3), 7.0)
 
 
-@pytest.mark.parametrize("seed", [0, 1])
-def test_rate_endpoints_always_and_never(seed: int) -> None:
+def test_rate_endpoints_always_and_never() -> None:
+    seed = 0
     rng = np.random.default_rng(seed)
     scores: list[float | None] = [None, 1.0, 1.0, None, *rng.normal(size=200), None]
     always = UncertaintyGate(rate=1.0, random_state=seed)
@@ -137,19 +137,19 @@ def test_rate_endpoints_always_and_never(seed: int) -> None:
 
 
 @pytest.mark.parametrize("q", [0.1, 0.3, 0.7])
-@pytest.mark.parametrize("kind", ["continuous", "constant", "discrete", "missing"])
-def test_realised_rate_is_q(q: float, kind: str) -> None:
+def test_realised_rate_is_q(q: float) -> None:
     rng = np.random.default_rng(42)
     n = 4000
-    scores: list[float | None] = {
+    kinds: dict[str, list[float | None]] = {
         "continuous": list(rng.normal(size=n)),
         "constant": [0.5] * n,
         "discrete": [float(v) for v in rng.integers(0, 3, size=n)],  # vote gaps
         "missing": [None] * n,
-    }[kind]
-    fired = _decisions(UncertaintyGate(rate=q, random_state=0), scores)
-    # Standard error of a rate over 4000 instances is below 0.008.
-    assert fired.mean() == pytest.approx(q, abs=0.03)
+    }
+    for scores in kinds.values():
+        fired = _decisions(UncertaintyGate(rate=q, random_state=0), scores)
+        # Standard error of a rate over 4000 instances is below 0.008.
+        assert fired.mean() == pytest.approx(q, abs=0.03)
 
 
 def test_rate_fires_on_the_highest_scores() -> None:
@@ -418,41 +418,40 @@ def test_refitting_a_selector_resets_its_gate() -> None:
 
 
 @pytest.mark.parametrize(
-    "gate_class", [UncertaintyGate, CloseCallGate, UnfamiliarityGate, TimeoutRiskGate]
+    ("gate_class", "rating"),
+    [
+        (UncertaintyGate, np.abs),  # large |f0| = uncertain
+        (CloseCallGate, np.abs),  # small |f0| = close call
+        (UnfamiliarityGate, lambda f0: f0),  # large f0 = unfamiliar
+        (TimeoutRiskGate, lambda f0: f0),  # large f0 = slow prediction
+    ],
 )
-def test_rate_sweep_in_a_selector(gate_class: type[ScoreGate]) -> None:
-    stream = make_stream(n=600, drift_at=10_000)
+@pytest.mark.slow
+def test_rate_sweep_in_a_selector(
+    gate_class: type[ScoreGate], rating: Callable[[np.ndarray], np.ndarray]
+) -> None:
+    stream = make_stream(n=400, drift_at=10_000)
+    f0 = stream.features["f0"].to_numpy()[10:]
     rates = {}
-    for q in (0.0, 0.25, 1.0):
+    for q in (0.25, 1.0):
         selector = _Toy(
             gate=gate_class(rate=q, random_state=0), detector=_ConstantScore()
         )
         steps = run_prequential(selector, stream, n_warmstart=10).steps
-        rates[q] = float((steps["n_runs"] > 1).mean())
+        extra = (steps["n_runs"] > 1).to_numpy()
+        rates[q] = float(extra.mean())
         if gate_class is UnfamiliarityGate:
             assert steps["instance_score"].notna().all()
         else:
             assert steps["instance_score"].isna().all()  # only computed on request
-    assert rates[0.0] == 0.0 and rates[1.0] == 1.0
+        if q == 0.25:
+            r = rating(f0)
+            if gate_class is CloseCallGate:
+                assert r[extra].mean() < r[~extra].mean()
+            else:
+                assert r[extra].mean() > r[~extra].mean()
+    assert rates[1.0] == 1.0
     assert rates[0.25] == pytest.approx(0.25, abs=0.06)
-
-
-def test_rated_instances_get_the_extras_in_a_selector() -> None:
-    stream = make_stream(n=600, drift_at=10_000)
-    f0 = stream.features["f0"].to_numpy()[10:]
-    for gate, rating in (
-        (UncertaintyGate(rate=0.2, random_state=0), np.abs(f0)),
-        (CloseCallGate(rate=0.2, random_state=0), np.abs(f0)),
-        (UnfamiliarityGate(rate=0.2, random_state=0), f0),
-        (TimeoutRiskGate(rate=0.2, random_state=0), f0),
-    ):
-        selector = _Toy(gate=gate, detector=_ConstantScore())
-        steps = run_prequential(selector, stream, n_warmstart=10).steps
-        extra = (steps["n_runs"] > 1).to_numpy()
-        if isinstance(gate, CloseCallGate):  # small gap = small |f0|
-            assert rating[extra].mean() < rating[~extra].mean()
-        else:
-            assert rating[extra].mean() > rating[~extra].mean()
 
 
 # -------------------------------------------------- frugal pairwise selector

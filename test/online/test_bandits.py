@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import partial
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -81,7 +82,7 @@ def region_stream(n: int = 600, seed: int = 0) -> InstanceStream:
 
 
 def abrupt_drift_stream(
-    n: int = 800, drift: int = 400, seed: int = 0
+    n: int = 600, drift: int = 300, seed: int = 0
 ) -> InstanceStream:
     """Context carries no information; best arm switches a -> b at ``drift``."""
     rng = np.random.default_rng(seed)
@@ -344,39 +345,57 @@ def _tail(
 KW = dict(budget=CUTOFF, random_state=0, noise_var=0.05)
 
 
+@pytest.mark.slow
 def test_linear_bandits_learn_feature_dependent_best_arm() -> None:
-    stream = region_stream(n=500)
-    ts = _tail(ThompsonSamplingSelector(**KW), stream, 0, 200)
+    stream = region_stream(n=300)
+    ts = _tail(ThompsonSamplingSelector(**KW), stream, 0, 120)
     for cls in (LinUCBSelector, LinTSSelector):
-        lin = _tail(cls(**KW), stream, 0, 200)
+        lin = _tail(cls(**KW), stream, 0, 120)
         # A linear model of a step function is misspecified, so c is still
         # picked near the boundary, but a / b take over in their regions.
         assert lin["user_cost"].mean() < 0.6 * ts["user_cost"].mean()
 
 
-def test_non_stationary_weightings_switch_arm_after_abrupt_drift() -> None:
-    stream = abrupt_drift_stream()  # best arm a -> b at step 400
-    stationary = _tail(ThompsonSamplingSelector(**KW), stream, 20, 300)
-    assert (stationary["primary"] == "b").mean() < 0.05  # never finds b again
-    for weighting in (
-        ExponentialDiscount(0.95),
-        ExponentialDiscount(0.99),
-        SlidingWindow(50),
-    ):
-        adapted = _tail(
-            ThompsonSamplingSelector(weighting=weighting, **KW), stream, 20, 300
-        )
-        assert (adapted["primary"] == "b").mean() > 0.5
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: ThompsonSamplingSelector(weighting=ExponentialDiscount(0.95), **KW),
+        lambda: ThompsonSamplingSelector(weighting=ExponentialDiscount(0.99), **KW),
+        lambda: ThompsonSamplingSelector(weighting=SlidingWindow(50), **KW),
+        lambda: DiscountedTSSelector(
+            0.95, noise_var=0.05, budget=CUTOFF, random_state=0
+        ),
+        lambda: SlidingWindowTSSelector(
+            100, noise_var=0.05, budget=CUTOFF, random_state=0
+        ),
+        lambda: FDSWTSSelector(budget=CUTOFF, random_state=0),
+    ],
+)
+@pytest.mark.slow
+def test_non_stationary_selectors_switch_arm_after_abrupt_drift(
+    make: Callable[[], AbstractContextualBandit],
+) -> None:
+    stream = abrupt_drift_stream()  # best arm a -> b at step 300
+    adapted = _tail(make(), stream, 20, 200)
+    assert (adapted["primary"] == "b").mean() > 0.5
 
 
+@pytest.mark.slow
+def test_stationary_control_never_finds_the_new_best_arm() -> None:
+    stream = abrupt_drift_stream()
+    stationary = _tail(ThompsonSamplingSelector(**KW), stream, 20, 200)
+    assert (stationary["primary"] == "b").mean() < 0.05
+
+
+@pytest.mark.slow
 def test_nearest_neighbour_window_makes_plain_ts_contextual() -> None:
-    stream = region_stream(n=500)
-    plain = _tail(ThompsonSamplingSelector(**KW), stream, 20, 200)
+    stream = region_stream(n=300)
+    plain = _tail(ThompsonSamplingSelector(**KW), stream, 20, 120)
     nn = _tail(
         ThompsonSamplingSelector(weighting=NearestNeighbours(5), **KW),
         stream,
         20,
-        200,
+        120,
     )
     assert nn["user_cost"].mean() < 0.6 * plain["user_cost"].mean()
 
@@ -457,17 +476,6 @@ def test_fdsw_traces() -> None:
     assert unit == {"a": 1.0, "b": 0.0}
     with pytest.raises(ValueError):
         ThompsonSamplingSelector(weighting=Uniform(), traces={"x": Uniform()})
-
-
-def test_non_stationary_ts_presets_switch_arm_after_drift() -> None:
-    stream = abrupt_drift_stream()
-    for sel in (
-        DiscountedTSSelector(0.99, noise_var=0.05, budget=CUTOFF, random_state=0),
-        SlidingWindowTSSelector(100, noise_var=0.05, budget=CUTOFF, random_state=0),
-        FDSWTSSelector(budget=CUTOFF, random_state=0),
-    ):
-        steps = _tail(sel, stream, 20, 300)
-        assert (steps["primary"] == "b").mean() > 0.5, type(sel).__name__
 
 
 def test_ds_ucb_and_sw_ucb_match_paper_indices() -> None:

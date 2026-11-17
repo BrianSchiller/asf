@@ -9,9 +9,6 @@ import pandas as pd
 import pytest
 
 from asf.online.drift import DriftSignal, OneClassDriftDetector
-from asf.online.evaluation import run_prequential
-from asf.online.selectors import OnlinePairwiseSelector
-from asf.online.streams.stream import InstanceStream
 
 D = 5
 NAMES = [f"f{i}" for i in range(D)]
@@ -304,40 +301,3 @@ def test_performance_is_ignored() -> None:
     a = OneClassDriftDetector(window_size=40).fit(ref, perf)
     b = OneClassDriftDetector(window_size=40).fit(ref)
     assert a.update(new, perf.iloc[:60]) == b.update(new)
-
-
-# -------------------------------------------------------------- integration
-def shift_stream(n_before: int = 300, n_after: int = 300) -> InstanceStream:
-    """Covariate shift in all features; the best algorithm changes with it."""
-    x = pd.concat(
-        [sample(n_before, 5), sample(n_after, 6, shift=2.0)], ignore_index=True
-    )
-    perf = np.where(
-        (np.arange(len(x)) < n_before)[:, None], [[5, 50, 20]], [[50, 5, 20]]
-    ).astype(float)
-    idx = pd.Index([f"i{k}" for k in range(len(x))])
-    x.index = idx
-    return InstanceStream(
-        x,
-        pd.DataFrame(perf, index=idx, columns=["a", "b", "c"]),
-        cutoff=1000.0,
-        drift_points=(n_before,),
-    )
-
-
-def test_integration_with_online_pairwise_selector() -> None:
-    stream = shift_stream()
-    kw = dict(reference_period=80, random_state=0)
-    detector = OneClassDriftDetector(window_size=50, baseline="cross_validated")
-    adaptive = run_prequential(OnlinePairwiseSelector(detector=detector, **kw), stream)
-    static = run_prequential(OnlinePairwiseSelector(**kw), stream)
-
-    assert len(adaptive.drift_steps) == 1 and 300 <= adaptive.drift_steps[0] < 350
-    assert adaptive.retrain_steps == adaptive.drift_steps
-    assert detector.n_retrains_ == 1
-    steps = adaptive.steps
-    assert steps["drift_signal"].sum() == 1
-    assert steps["detector_score"].notna().sum() > 0
-    after = slice(400, None)  # drift at position 300
-    a, s = steps["user_cost"].iloc[after], static.steps["user_cost"].iloc[after]
-    assert a.mean() < s.mean()

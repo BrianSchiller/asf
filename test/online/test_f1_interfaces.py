@@ -164,16 +164,13 @@ def test_custom_record_is_logged() -> None:
 
 
 # ---------------------------------------------------------------- gates
-def test_default_gates_reproduce_built_in_extras() -> None:
+def test_default_gates_and_never_probe_on_rook() -> None:
     assert isinstance(OnlinePairwiseSelector().gate_, AlwaysProbe)
     stream = three_algo_stream()
     sel = OnlinePairwiseSelector(n_additional=2, reference_period=10, random_state=0)
     assert (run_prequential(sel, stream).steps["n_runs"] == 3).all()
-
-
-def test_never_probe_turns_rook_into_single_runs() -> None:
     sel = OnlinePairwiseSelector(reference_period=10, gate=NeverProbe(), random_state=0)
-    steps = run_prequential(sel, three_algo_stream()).steps
+    steps = run_prequential(sel, stream).steps
     assert (steps["n_runs"] == 1).all()
     assert (steps["extras"] == "[]").all()
 
@@ -225,7 +222,7 @@ def test_gate_receives_instance_score_and_drift_context() -> None:
 
 
 # ------------------------------------------------------------- detectors
-def test_feature_detector_needs_reference_size_on_cold_start() -> None:
+def test_feature_detector_reference_size_and_warm_start_fit() -> None:
     sel = ThompsonSamplingSelector(
         budget=CUTOFF, detector=_ScriptedDetector(set()), random_state=0
     )
@@ -246,9 +243,7 @@ def test_feature_detector_needs_reference_size_on_cold_start() -> None:
     assert steps["detector_score"].iloc[:25].isna().all()
     assert (steps["detector_score"].iloc[25:] == 1.0).all()
 
-
-def test_warm_start_fits_feature_detector_on_the_prefix() -> None:
-    detector = _ScriptedDetector(set())
+    detector = _ScriptedDetector(set())  # warm start: fitted on the prefix
     sel = ThompsonSamplingSelector(budget=CUTOFF, detector=detector, random_state=0)
     run_prequential(sel, make_stream(), n_warmstart=30)
     assert detector.fit_sizes == [30]
