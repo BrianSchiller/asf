@@ -1,3 +1,9 @@
+from asf.online.streams.drift_generators import (
+    cluster_labels,
+    combine_scenarios,
+    grouped_stream,
+    sorted_stream,
+)
 from asf.online.streams.stream import InstanceStream, StreamItem
 from asf.online.streams.synthetic import (
     FeatureRegime,
@@ -15,4 +21,8 @@ __all__ = [
     "StreamPhase",
     "make_synthetic_stream",
     "make_synthetic_scenario",
+    "combine_scenarios",
+    "grouped_stream",
+    "sorted_stream",
+    "cluster_labels",
 ]

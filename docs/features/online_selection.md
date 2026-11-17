@@ -532,4 +532,6 @@ pilots.
 
 See `examples/online/` for runnable examples.
 See [Synthetic streams](synthetic_streams.md) to configure stationary, sudden,
-gradual and recurring covariate shifts for selector experiments.
+gradual and recurring covariate shifts for selector experiments, and
+[Streams from benchmark data](stream_construction.md) to build drifting
+streams from ASlib scenarios (switching, sorting, clustering).
