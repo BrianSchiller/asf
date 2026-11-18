@@ -88,30 +88,39 @@ def hours(costs: pd.Series) -> pd.Series:
     return out / 3600
 
 
-user, compute, extra = {}, {}, {}
+user, compute, extra, solved, decide = {}, {}, {}, {}, {}
 for name, (selector, n_warm) in SELECTORS.items():
     steps = run_prequential(selector, stream, n_warmstart=n_warm, par_factor=PAR).steps
     steps.index = steps["step"] + n_warm  # position in the full stream
     steps = steps.loc[WARM:]
     user[name], compute[name] = hours(steps["user_cost"]), hours(steps["compute_cost"])
     extra[name] = (steps["n_runs"] > 1).mean()
+    solved[name] = (steps["user_cost"] < PAR * cutoff).mean()
+    decide[name] = (steps["selector_seconds"] + steps["detector_seconds"]).sum()
     print(f"done: {name}")
 
 par = performance.loc[stream.features.index].reset_index(drop=True)
 par = par.where(par <= cutoff, PAR * cutoff).iloc[WARM:]
-user["SBS (hindsight)"] = hours(par[par.mean().idxmin()])
-user["VBS"] = hours(par.min(axis=1))
+sbs, vbs = par[par.mean().idxmin()], par.min(axis=1)
+user["SBS (hindsight)"], user["VBS"] = hours(sbs), hours(vbs)
+solved["SBS (hindsight)"] = (sbs < PAR * cutoff).mean()
+solved["VBS"] = (vbs < PAR * cutoff).mean()
 
 pd.set_option("display.width", 200)
 print(f"\nPAR{PAR:g} runtime the user gets, in hours (instances {WARM}-{len(stream)}):")
 print(pd.DataFrame(user).T.round(1).to_string())
-print("\nTotal runtime and compute time of all runs (extra runs included), in hours:")
+print(
+    "\nTotals: user PAR10 and compute (all runs, extra runs included) in hours,"
+    " solved share, selector decision time in seconds:"
+)
 print(
     pd.DataFrame(
         {
             "user PAR10": {k: v["total"] for k, v in user.items()},
             "compute": {k: v["total"] for k, v in compute.items()},
             "extra-run rate": extra,
+            "solved": solved,
+            "decision s": decide,
         }
     )
     .round(2)

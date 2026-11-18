@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import ClassifierMixin
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble._forest import ForestClassifier
 
 from asf.online.base import AbstractOnlineSelector, DriftResponses, Observation
 from asf.online.drift.abstract_detector import (
@@ -411,6 +412,36 @@ def _positive_proba(model: _Model, x: np.ndarray) -> np.ndarray:
     if isinstance(model, float):
         return np.full(len(x), model)
     estimator = _proba_estimator(model)
-    proba = np.asarray(estimator.predict_proba(x))
+    if _is_plain_forest(estimator) and not np.isnan(x).any():
+        proba = _forest_proba(estimator, x)
+    else:
+        proba = np.asarray(estimator.predict_proba(x))
     classes = list(getattr(estimator, "classes_", [0, 1]))
     return proba[:, classes.index(1)]
+
+
+def _is_plain_forest(estimator: Any) -> bool:
+    """A fitted single-output sklearn forest classifier (random or extra trees)."""
+    return (
+        isinstance(estimator, ForestClassifier)
+        and hasattr(estimator, "estimators_")
+        and getattr(estimator, "n_outputs_", 1) == 1
+    )
+
+
+def _forest_proba(forest: ForestClassifier, x: np.ndarray) -> np.ndarray:
+    """
+    ``forest.predict_proba(x)`` without sklearn's per-call overhead.
+
+    The selector asks every pair classifier about a single instance, so a
+    forest's ``predict_proba`` spends most of its time validating the input
+    and starting its thread pool rather than in the trees. This averages the
+    trees' probabilities directly, exactly as ``predict_proba`` does (same
+    trees, same mean), validating the input once. Inputs with missing values
+    take the regular ``predict_proba`` path.
+    """
+    x32 = np.ascontiguousarray(x, dtype=np.float32)
+    total = forest.estimators_[0].predict_proba(x32, check_input=False)
+    for tree in forest.estimators_[1:]:
+        total += tree.predict_proba(x32, check_input=False)
+    return total / len(forest.estimators_)
