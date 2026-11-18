@@ -112,6 +112,22 @@ def test_default_gate_runs_most_uncertain_nominee() -> None:
     assert sel.propose(_one()) == [("c", 0.0)]
 
 
+def test_runner_up_nominates_only_the_second_most_voted() -> None:
+    # votes: c 2, a 1, b 0; most uncertain pair is (c, b), runner-up is a
+    models = {(0, 1): 0.9, (0, 2): 0.2, (1, 2): 0.45}
+    sel = _fitted()
+    sel._models = dict(models)
+    record = sel._select(_one())
+    assert record.candidates == ("b", "a")
+    assert record.uncertainty == pytest.approx(0.45)
+    sel = _fitted(candidate_order="runner_up")
+    sel._models = dict(models)
+    record = sel._select(_one())
+    assert record.chosen == "c" and record.candidates == ("a",)
+    assert record.uncertainty == pytest.approx(0.2)
+    assert sel.propose(_one()) == [("c", 0.0)]  # 0.2 < default threshold 0.25
+
+
 def test_random_candidate_order_is_seeded() -> None:
     orders = set()
     for seed in range(8):

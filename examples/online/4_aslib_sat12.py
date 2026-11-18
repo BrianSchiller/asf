@@ -58,12 +58,14 @@ SELECTORS = {
     "LinTS": (LinTSSelector(budget=cutoff, random_state=0), 0),
     "Online pairwise": (
         OnlinePairwiseSelector(
-            reference_period=WARM, retrain_policy=PeriodicRetrain(100), random_state=0
+            reference_period=0, retrain_policy=PeriodicRetrain(100), random_state=0
         ),
         0,
     ),
-    "Frugal pairwise": (FrugalPairwiseSelector(random_state=0), 0),
-    # one random forest predicting the best solver, trained once on the prefix
+    "Frugal pairwise": (
+        FrugalPairwiseSelector(candidate_order="runner_up", random_state=0),
+        0,
+    ),
     "Static multi-class": (
         StaticOnlineSelector(MultiClassClassifier(random_state=0)),
         WARM,

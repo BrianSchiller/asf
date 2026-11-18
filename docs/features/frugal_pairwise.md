@@ -47,7 +47,7 @@ cast no vote, so on a cold start the gate fires until data arrives.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `model_class` | `RandomForestClassifier` | Pair classifier; needs `predict_proba` |
-| `candidate_order` | `"uncertainty"` | Nominee order; `"random"` is the paper's random baseline |
+| `candidate_order` | `"uncertainty"` | Nominee order; `"random"` is the paper's random baseline; `"runner_up"` nominates only the algorithm with the second-most votes and uses the uncertainty of that one pair |
 | `timeout_filter` | `False` | Drop a nominee if it and the chosen algorithm are both predicted to time out |
 | `timeout_voting` | `False` | Exclude predicted timeouts from voting (unless all are) |
 | `timeout_model_class` | `RandomForestClassifier` | Classifier of the timeout predictors |

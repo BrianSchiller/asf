@@ -79,7 +79,10 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
       ``PredictionRecord.uncertainty`` is the uncertainty of the first
       nominee. The default gate, :class:`~asf.online.gate.UncertaintyGate`
       with ``threshold=0.25``, runs that nominee if the uncertainty reaches
-      the threshold.
+      the threshold. With ``candidate_order="runner_up"`` only the algorithm
+      with the second-most votes is nominated, and the uncertainty is that of
+      the pair (chosen, runner-up): an extra run is then only spent when the
+      runner-up might be better, not on pairs with hopeless algorithms.
     * **Timeout predictors (optional).** One classifier per algorithm predicts
       whether it times out. ``timeout_filter`` drops a nominee if it and the
       chosen algorithm are both predicted to time out (a double timeout is
@@ -102,9 +105,10 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         wrapped ``model_class`` of an ASF ``SklearnWrapper``). sklearn's
         defaults match the paper's random forest (100 trees, Gini, sqrt
         features, bootstrap).
-    candidate_order : {"uncertainty", "random"}, default="uncertainty"
-        Order of the nominees: most uncertain pair first, or uniformly random
-        (the paper's random-selection baseline).
+    candidate_order : {"uncertainty", "random", "runner_up"}, default="uncertainty"
+        Order of the nominees: most uncertain pair first, uniformly random
+        (the paper's random-selection baseline), or only the vote runner-up
+        (ties broken at random).
     timeout_filter : bool, default=False
         Use timeout predictors to drop likely double-timeout nominees.
     timeout_voting : bool, default=False
@@ -136,7 +140,7 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
     def __init__(
         self,
         model_class: Any = RandomForestClassifier,
-        candidate_order: Literal["uncertainty", "random"] = "uncertainty",
+        candidate_order: Literal["uncertainty", "random", "runner_up"] = "uncertainty",
         timeout_filter: bool = False,
         timeout_voting: bool = False,
         timeout_model_class: Any = RandomForestClassifier,
@@ -162,7 +166,7 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
             detector_reference_size=detector_reference_size,
             **kwargs,
         )
-        if candidate_order not in ("uncertainty", "random"):
+        if candidate_order not in ("uncertainty", "random", "runner_up"):
             raise ValueError(f"Unknown candidate_order: {candidate_order!r}")
         if update_every < 1:
             raise ValueError("update_every must be >= 1.")
@@ -223,10 +227,14 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         if self.timeout_filter and timeouts[chosen]:
             others = others[~timeouts[others]]
         uncertainty = least_confidence(probs[chosen, others])
-        if self.candidate_order == "uncertainty":
-            order = np.argsort(-uncertainty, kind="stable")
-        else:
+        if self.candidate_order == "runner_up" and len(others):
+            runner_up = votes[others] == votes[others].max()
+            k = int(self._rng.choice(np.flatnonzero(runner_up)))
+            others, uncertainty = others[[k]], uncertainty[[k]]
+        if self.candidate_order == "random":
             order = self._rng.permutation(len(others))
+        else:
+            order = np.argsort(-uncertainty, kind="stable")
         return PredictionRecord(
             chosen=self.algorithms[chosen],
             budget=0.0,
