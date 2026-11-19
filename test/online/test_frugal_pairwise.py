@@ -10,9 +10,8 @@ from sklearn.tree import DecisionTreeClassifier
 
 from asf.online.base import Observation
 from asf.online.evaluation.prequential import run_prequential
-from asf.online.gate import AlwaysProbe, GateContext, UncertaintyGate
+from asf.online.gate import AllNomineesGate, GateContext, UncertaintyGate
 from asf.online.prediction import PredictionRecord
-from asf.online.retraining.policy import PeriodicRetrain
 from asf.online.retraining.response import ResetResponse, RetrainResponse
 from asf.online.selectors import FrugalPairwiseSelector
 from asf.online.selectors.frugal_pairwise import least_confidence
@@ -302,12 +301,12 @@ def test_prequential_is_deterministic_and_frugal() -> None:
     assert (steps["user_cost"] == steps["cost_primary"]).all()  # RESULT_MODE
 
 
-def test_always_probe_gives_two_runs_per_instance() -> None:
-    steps = _run(0, 20, gate=AlwaysProbe(1))
+def test_all_nominees_gate_gives_two_runs_per_instance() -> None:
+    steps = _run(0, 20, gate=AllNomineesGate(1))
     assert (steps["n_runs"] == 2).all()
 
 
-def test_periodic_retrain_policy_is_supported() -> None:
-    sel = _selector(retrain_policy=PeriodicRetrain(25))
+def test_retrain_every_is_supported() -> None:
+    sel = _selector(retrain_every=25)
     result = run_prequential(sel, make_stream(), n_warmstart=20)
     assert len(result.retrain_steps) == 4

@@ -24,7 +24,7 @@ and inside ``observe``::
     gate.observe(last_prediction_, observation)          # gate sees the outcome
     signal = detector.update(...)                        # feature or scalar detector
     if signal.drift: on_drift(signal)                    # drift responses
-    if retrain_policy.should_retrain(...): retrain()     # schedule-based retraining
+    every retrain_every instances: retrain()             # schedule-based retraining
     re-reference the detector if the model was rebuilt
 """
 
@@ -46,10 +46,9 @@ from asf.online.drift.abstract_detector import (
     AbstractScalarDriftDetector,
     DriftSignal,
 )
-from asf.online.drift.statistics import AbstractDriftStatistic
-from asf.online.gate import AbstractExtraRunGate, AlwaysProbe, GateContext
+from asf.online.drift.statistics import DriftStatistic
+from asf.online.gate import AbstractExtraRunGate, AllNomineesGate, GateContext
 from asf.online.prediction import PredictionRecord
-from asf.online.retraining.policy import AbstractRetrainPolicy
 from asf.online.retraining.response import AbstractDriftResponse
 from asf.selectors.abstract_selector import AbstractSelector
 
@@ -141,7 +140,7 @@ class AbstractOnlineSelector(AbstractSelector):
     * the **drift detector** (``detector``), feature-based or scalar-stream
       (the latter with a ``drift_statistic``),
     * the **drift responses** (``drift_response``) run by :meth:`on_drift`,
-    * the schedule-based **retrain policy** (``retrain_policy``).
+    * schedule-based **retraining** (``retrain_every``).
 
     Bookkeeping that the evaluation loop reads:
 
@@ -171,16 +170,19 @@ class AbstractOnlineSelector(AbstractSelector):
         Drift detector. Feature-based detectors are fitted on the buffer once
         ``detector_reference_size`` instances have been seen (or right after
         a warm start); scalar detectors need ``drift_statistic``.
-    drift_statistic : AbstractDriftStatistic or None, default=None
-        Turns observation and prediction into the scalar a scalar detector
-        consumes. Required for, and only allowed with, scalar detectors.
+    drift_statistic : DriftStatistic or None, default=None
+        Callable turning ``(observation, prediction)`` into the
+        ``(value, censored)`` pair a scalar detector consumes (``None`` = no
+        value for this instance). Required for, and only allowed with, scalar
+        detectors.
     drift_response : AbstractDriftResponse, sequence of them, or None, default=None
         Responses executed, in order, when the detector signals drift. ``None``
         means no response (the signal is only recorded), unless a subclass
         sets a default.
-    retrain_policy : AbstractRetrainPolicy or None, default=None
-        Checked after every instance (independently of drift responses);
-        retrains when it fires. Requires a selector implementing ``_retrain``.
+    retrain_every : int or None, default=None
+        Retrain after every ``retrain_every`` stream instances (warm start not
+        counted), independently of drift responses. Requires a selector
+        implementing ``_retrain``.
     detector_reference_size : int or None, default=None
         Number of instances (warm start included) after which a feature
         detector is fitted on the buffer. ``None``: fit right after the warm
@@ -211,9 +213,9 @@ class AbstractOnlineSelector(AbstractSelector):
         window_size: int | None = 200,
         gate: AbstractExtraRunGate | None = None,
         detector: AbstractDriftDetector | AbstractScalarDriftDetector | None = None,
-        drift_statistic: AbstractDriftStatistic | None = None,
+        drift_statistic: DriftStatistic | None = None,
         drift_response: DriftResponses = None,
-        retrain_policy: AbstractRetrainPolicy | None = None,
+        retrain_every: int | None = None,
         detector_reference_size: int | None = None,
         **kwargs: Any,
     ) -> None:
@@ -231,6 +233,8 @@ class AbstractOnlineSelector(AbstractSelector):
                 raise ValueError("A scalar detector needs a drift_statistic.")
         elif drift_statistic is not None:
             raise ValueError("drift_statistic is only used with a scalar detector.")
+        if retrain_every is not None and retrain_every < 1:
+            raise ValueError("retrain_every must be >= 1.")
         if detector_reference_size is not None and detector_reference_size < 1:
             raise ValueError("detector_reference_size must be >= 1.")
         self.gate = gate
@@ -243,7 +247,7 @@ class AbstractOnlineSelector(AbstractSelector):
         self.drift_responses_: tuple[AbstractDriftResponse, ...] = _as_responses(
             drift_response
         )
-        self.retrain_policy = retrain_policy
+        self.retrain_every = retrain_every
         self.detector_reference_size = (
             None if detector_reference_size is None else int(detector_reference_size)
         )
@@ -296,10 +300,10 @@ class AbstractOnlineSelector(AbstractSelector):
                     f"{type(self).__name__} does not implement {response.REQUIRES}, "
                     f"which {type(response).__name__} needs."
                 )
-        if self.retrain_policy is not None and not self.supports("_retrain"):
+        if self.retrain_every is not None and not self.supports("_retrain"):
             raise ValueError(
-                f"{type(self).__name__} does not implement _retrain, which a "
-                "retrain_policy needs."
+                f"{type(self).__name__} does not implement _retrain, which "
+                "retrain_every needs."
             )
         if (
             isinstance(self.detector, AbstractDriftDetector)
@@ -391,12 +395,14 @@ class AbstractOnlineSelector(AbstractSelector):
                     self.drift_steps.append(self.step_)
                     self.last_drift_step_ = self.step_
                     self.on_drift(signal)
-            policy = self.retrain_policy
-            # Number of instances seen in the stream including the current one.
-            if policy is not None and policy.should_retrain(self.step_ + 1, signal):
-                if not self._retrained_this_step:
-                    self.retrain()
-                policy.on_retrained(self.step_ + 1)
+            # step_ + 1 = stream instances seen, the current one included
+            every = self.retrain_every
+            if (
+                every
+                and (self.step_ + 1) % every == 0
+                and not self._retrained_this_step
+            ):
+                self.retrain()
             if self._rereference_pending:
                 self.rereference_detector()
         if not self.MANAGES_DETECTOR_FIT:
@@ -508,7 +514,7 @@ class AbstractOnlineSelector(AbstractSelector):
 
     def _default_gate(self) -> AbstractExtraRunGate:
         """Gate used when none is given: run all of the selector's nominees."""
-        return AlwaysProbe()
+        return AllNomineesGate()
 
     def _adaptation_active(self) -> bool:
         """Whether detection, drift responses and the retrain policy run for
@@ -554,10 +560,9 @@ class AbstractOnlineSelector(AbstractSelector):
             sample = self.drift_statistic(obs, trace.prediction)
             if sample is None:
                 return None
-            trace.drift_statistic = float(sample.value)
-            return self._time_detector(
-                self.detector.update, sample.value, sample.censored
-            )
+            value, censored = sample
+            trace.drift_statistic = float(value)
+            return self._time_detector(self.detector.update, value, censored)
         return self._time_detector(
             self.detector.update, obs.features, self._performance_row(obs)
         )

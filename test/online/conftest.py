@@ -1,4 +1,4 @@
-"""Shared fixtures: a tiny synthetic stream with one abrupt drift."""
+"""Shared fixtures: a tiny hand-made stream with one abrupt drift."""
 
 from __future__ import annotations
 

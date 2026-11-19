@@ -149,14 +149,14 @@ class AbstractExtraRunGate(ABC):
         """
 
 
-class NeverProbe(AbstractExtraRunGate):
+class NoExtrasGate(AbstractExtraRunGate):
     """Never run extra algorithms (the bandits' default)."""
 
     def extras(self, context: GateContext) -> Sequence[str]:
         return ()
 
 
-class ProbeAllAfterDrift(AbstractExtraRunGate):
+class AfterDriftGate(AbstractExtraRunGate):
     """
     Run every algorithm on the first instance after a drift signal.
 
@@ -172,7 +172,7 @@ class ProbeAllAfterDrift(AbstractExtraRunGate):
     """
 
     def __init__(self, gate: AbstractExtraRunGate | None = None) -> None:
-        self.gate = gate if gate is not None else NeverProbe()
+        self.gate = gate if gate is not None else NoExtrasGate()
 
     @property
     def needs_instance_score(self) -> bool:  # type: ignore[override]
@@ -190,7 +190,7 @@ class ProbeAllAfterDrift(AbstractExtraRunGate):
         self.gate.reset()
 
 
-class AlwaysProbe(AbstractExtraRunGate):
+class AllNomineesGate(AbstractExtraRunGate):
     """
     Always run the first ``n`` nominees (all of them for ``n=None``).
 

@@ -27,7 +27,7 @@ from sklearn.ensemble._forest import BaseForest
 from sklearn.impute import SimpleImputer
 
 from asf.online.base import AbstractOnlineSelector, Observation, random_argmax
-from asf.online.gate import AbstractExtraRunGate, NeverProbe
+from asf.online.gate import AbstractExtraRunGate, NoExtrasGate
 from asf.online.imputation import CensoredImputer, ExpectedImputer
 from asf.online.prediction import PredictionRecord
 from asf.preprocessing.schmee_hahn_imputer import schmee_hahn_impute
@@ -121,7 +121,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
     runtime, or the quality score for ``maximize=True``). After every
     instance the observed performance of the executed algorithms is added to
     the training data (Algorithm 1 of the paper) and the models are updated
-    every ``retrain_every`` new data points (the paper's experiments: 10).
+    every ``update_every`` new data points (the paper's experiments: 10).
 
     Selection strategies (Section "Online Algorithm Selection as a
     Multi-armed Bandit"):
@@ -135,8 +135,8 @@ class OnlineEPMSelector(AbstractOnlineSelector):
       ``prediction - gamma * sd``.
 
     Like the paper, the selector runs one algorithm per instance (default
-    gate :class:`~asf.online.gate.NeverProbe`). The paper's ``allData``
-    upper bound is ``gate=AlwaysProbe()`` (all other algorithms are nominated)
+    gate :class:`~asf.online.gate.NoExtrasGate`). The paper's ``allData``
+    upper bound is ``gate=AllNomineesGate()`` (all other algorithms are nominated)
     evaluated with ``result_mode="primary"``.
 
     Prediction record: ``predicted_runtime`` is the predicted PAR-k value of
@@ -175,8 +175,8 @@ class OnlineEPMSelector(AbstractOnlineSelector):
       scenario, which would use future instances; here each model imputes the
       mean of its training instances (0 for features that are always missing).
     * Assumption (update schedule): the counter of new data points includes
-      extra runs; once it reaches ``retrain_every``, every model whose training
-      data changed is refitted and the counter restarts at 0. ``retrain_every=1``
+      extra runs; once it reaches ``update_every``, every model whose training
+      data changed is refitted and the counter restarts at 0. ``update_every=1``
       is Algorithm 1 literally. These updates are part of the normal learning
       and are not logged as retrainings (their time is in ``selector_seconds``).
     * Assumption (cold start): the paper does not say how algorithms without
@@ -212,7 +212,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         log10 (runtimes clipped to ``LOG_FLOOR``). Not for ``maximize=True``.
     par_factor : float, default=10.0
         Penalty factor for unsolved runs (PAR10 in the paper).
-    retrain_every : int, default=10
+    update_every : int, default=10
         Number of new data points after which the models are updated.
     imputation : CensoredImputer or None, default=None
         How unsolved runs are learnt from (see "Censored imputation" above);
@@ -227,7 +227,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         Instances kept as training data; ``None`` = all (paper).
     **kwargs : Any
         Forwarded to :class:`~asf.online.base.AbstractOnlineSelector`
-        (``gate``, ``detector``, ``drift_response``, ``retrain_policy``,
+        (``gate``, ``detector``, ``drift_response``, ``retrain_every``,
         ``budget`` -- the cutoff of the warm start --, ``maximize``,
         ``random_state``, ...).
     """
@@ -242,7 +242,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         jackknife_bias_correction: bool = True,
         target_transform: TargetTransform = "none",
         par_factor: float = 10.0,
-        retrain_every: int = 10,
+        update_every: int = 10,
         imputation: CensoredImputer | None = None,
         imputation_max_iter: int = 20,
         imputation_tol: float = 1e-3,
@@ -266,8 +266,8 @@ class OnlineEPMSelector(AbstractOnlineSelector):
             raise ValueError("target_transform='log10' is for runtime minimization.")
         if not par_factor > 0:
             raise ValueError("par_factor must be > 0.")
-        if retrain_every < 1:
-            raise ValueError("retrain_every must be >= 1.")
+        if update_every < 1:
+            raise ValueError("update_every must be >= 1.")
         template = estimator if estimator is not None else default_estimator()
         if uncertainty is not None and not isinstance(template, BaseForest):
             raise ValueError("uncertainty needs a forest estimator (BaseForest).")
@@ -296,7 +296,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         self.jackknife_bias_correction = bool(jackknife_bias_correction)
         self.target_transform = target_transform
         self.par_factor = float(par_factor)
-        self.retrain_every = int(retrain_every)
+        self.update_every = int(update_every)
         self.imputation = imputation
         self.imputation_max_iter = int(imputation_max_iter)
         self.imputation_tol = float(imputation_tol)
@@ -319,7 +319,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
             self.cutoff_ = float(observation.cutoff)
         self.n_rows_seen_ += 1
         self.pending_ += len(observation.runtimes)
-        if self.pending_ >= self.retrain_every:
+        if self.pending_ >= self.update_every:
             self.pending_ = 0
             self._update_models(only_missing=False)
         elif any(str(a) not in self.models_ for a in observation.runtimes):
@@ -338,7 +338,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
 
     def _default_gate(self) -> AbstractExtraRunGate:
         """One run per instance, as in the paper."""
-        return NeverProbe()
+        return NoExtrasGate()
 
     def _training_targets(
         self, performance: pd.DataFrame, censored: pd.DataFrame

@@ -41,7 +41,6 @@ nav:
     - Online Selection: features/online_selection.md
     - Frugal Pairwise Selector: features/frugal_pairwise.md
     - Bandit Selectors: features/bandits.md
-    - Synthetic Streams: features/synthetic_streams.md
     - Streams from Benchmark Data: features/stream_construction.md
   - API Reference:
       - Performance Prediction: api/epm.md

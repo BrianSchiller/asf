@@ -29,10 +29,9 @@ from asf.online.drift.abstract_detector import (
     AbstractDriftDetector,
     AbstractScalarDriftDetector,
 )
-from asf.online.drift.statistics import AbstractDriftStatistic
+from asf.online.drift.statistics import DriftStatistic
 from asf.online.gate import AbstractExtraRunGate, UncertaintyGate
 from asf.online.prediction import PredictionRecord
-from asf.online.retraining.policy import AbstractRetrainPolicy
 from asf.predictors import SklearnWrapper
 from asf.selectors.abstract_model_based_selector import AbstractModelBasedSelector
 from asf.utils.random_state import random_state_kwargs
@@ -132,7 +131,7 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         labelled set, which only grows).
     gate : AbstractExtraRunGate or None, default=None
         Extra-run gate; ``None`` = ``UncertaintyGate(threshold=0.25, n=1)``.
-    detector, drift_statistic, drift_response, retrain_policy, detector_reference_size
+    detector, drift_statistic, drift_response, retrain_every, detector_reference_size
         See :class:`~asf.online.base.AbstractOnlineSelector`. Supported
         responses: ``RetrainResponse`` (refit all models) and ``ResetResponse``
         (forget all data seen so far).
@@ -155,9 +154,9 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         window_size: int | None = None,
         gate: AbstractExtraRunGate | None = None,
         detector: AbstractDriftDetector | AbstractScalarDriftDetector | None = None,
-        drift_statistic: AbstractDriftStatistic | None = None,
+        drift_statistic: DriftStatistic | None = None,
         drift_response: DriftResponses = None,
-        retrain_policy: AbstractRetrainPolicy | None = None,
+        retrain_every: int | None = None,
         detector_reference_size: int | None = None,
         **kwargs: Any,
     ) -> None:
@@ -168,7 +167,7 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
             detector=detector,
             drift_statistic=drift_statistic,
             drift_response=drift_response,
-            retrain_policy=retrain_policy,
+            retrain_every=retrain_every,
             detector_reference_size=detector_reference_size,
             **kwargs,
         )

@@ -11,7 +11,7 @@ import pytest
 
 from asf.online.drift.statistics import LogRuntimeResidual
 from asf.online.evaluation import run_prequential
-from asf.online.gate import AlwaysProbe, NeverProbe, UncertaintyGate
+from asf.online.gate import AllNomineesGate, NoExtrasGate, UncertaintyGate
 from asf.online.selectors.bandits import (
     AbstractContextualBandit,
     FDSWTSSelector,
@@ -48,12 +48,12 @@ def _with_arms(
 
 def _ucb(**kwargs: Any) -> UCBSelector:
     """UCB with interval ``mean +- width`` (no ln t factor), always gated."""
-    kwargs.setdefault("gate", AlwaysProbe(1))
+    kwargs.setdefault("gate", AllNomineesGate(1))
     return UCBSelector(alpha=1.0, ucb1=False, budget=CUTOFF, random_state=0, **kwargs)
 
 
 def _ts(**kwargs: Any) -> ThompsonSamplingSelector:
-    kwargs.setdefault("gate", AlwaysProbe(1))
+    kwargs.setdefault("gate", AllNomineesGate(1))
     return ThompsonSamplingSelector(
         prior_precision=0.0, budget=CUTOFF, random_state=0, **kwargs
     )
@@ -130,7 +130,7 @@ def test_uncertainty_samples_zero_and_validation() -> None:
 def test_ungated_bandit_is_unchanged_and_draws_nothing_extra() -> None:
     arms = {"a": (0.0, 1.0), "b": (0.2, 1.0), "c": (-0.5, 2.0)}
     sel = _with_arms(_ts(gate=None), arms)
-    assert isinstance(sel.gate_, NeverProbe)
+    assert isinstance(sel.gate_, NoExtrasGate)
     before = np.random.default_rng(0)
     [before.standard_normal() for _ in ALGOS]
     before.choice(np.array([0]))
@@ -231,7 +231,7 @@ def test_predicted_runtime_is_the_inverted_posterior_mean() -> None:
 
     sample = LogRuntimeResidual()(_obs(stream, 2, ["a"]), record)  # B4's signal
     assert sample is not None
-    assert sample.value == pytest.approx(np.log(1.0) - np.log(10**1.5 - 1))
+    assert sample[0] == pytest.approx(np.log(1.0) - np.log(10**1.5 - 1))
 
 
 # ---------------------------------------------------------------- end to end
@@ -274,7 +274,7 @@ def test_gated_bandits_run_and_are_deterministic(cls: Any, n_warm: int) -> None:
 
 @pytest.mark.parametrize("cls", [ThompsonSamplingSelector, LinUCBSelector])
 def test_greedy_primary_with_exploring_extra_runs_end_to_end(cls: Any) -> None:
-    sel = cls(budget=CUTOFF, primary="greedy", gate=AlwaysProbe(1), random_state=0)
+    sel = cls(budget=CUTOFF, primary="greedy", gate=AllNomineesGate(1), random_state=0)
     result = run_prequential(sel, STREAM, result_mode="best_of_scheduled")
     assert (result.steps["n_runs"] == 2).all()
     assert result.steps["pred_runtime"].notna().mean() > 0.9

@@ -15,19 +15,17 @@ from asf.online.drift import (
     AbstractScalarDriftDetector,
     DriftSignal,
     LogRuntimeResidual,
-    ScalarSample,
 )
 from asf.online.evaluation import run_prequential
 from asf.online.gate import (
     AbstractExtraRunGate,
-    AlwaysProbe,
+    AllNomineesGate,
     GateContext,
-    NeverProbe,
-    ProbeAllAfterDrift,
+    NoExtrasGate,
+    AfterDriftGate,
 )
 from asf.online.prediction import PredictionRecord
 from asf.online.retraining import (
-    PeriodicRetrain,
     RaiseExplorationResponse,
     RereferenceResponse,
     ResetResponse,
@@ -166,12 +164,14 @@ def test_custom_record_is_logged() -> None:
 
 
 # ---------------------------------------------------------------- gates
-def test_default_gates_and_never_probe_on_rook() -> None:
-    assert isinstance(OnlinePairwiseSelector().gate_, AlwaysProbe)
+def test_default_gates_and_no_extras_gate_on_rook() -> None:
+    assert isinstance(OnlinePairwiseSelector().gate_, AllNomineesGate)
     stream = three_algo_stream()
     sel = OnlinePairwiseSelector(n_additional=2, reference_period=10, random_state=0)
     assert (run_prequential(sel, stream).steps["n_runs"] == 3).all()
-    sel = OnlinePairwiseSelector(reference_period=10, gate=NeverProbe(), random_state=0)
+    sel = OnlinePairwiseSelector(
+        reference_period=10, gate=NoExtrasGate(), random_state=0
+    )
     steps = run_prequential(sel, stream).steps
     assert (steps["n_runs"] == 1).all()
     assert (steps["extras"] == "[]").all()
@@ -277,22 +277,22 @@ def test_log_residual_censoring_and_missing_prediction() -> None:
     obs = Observation("i", pd.DataFrame({"f": [0.0]}), {"a": 10.0}, frozenset({"a"}))
     record = PredictionRecord(chosen="a", predicted_runtime=1.0)
     emit = LogRuntimeResidual()(obs, record)
-    assert emit == ScalarSample(value=math.log(10.0), censored=True)
+    assert emit == (math.log(10.0), True)
     assert LogRuntimeResidual(censored="skip")(obs, record) is None
     assert LogRuntimeResidual()(obs, PredictionRecord(chosen="a")) is None
     assert LogRuntimeResidual()(obs, None) is None
     zero = Observation("i", pd.DataFrame({"f": [0.0]}), {"a": 0.0})
     floor = LogRuntimeResidual(floor=1e-3)(zero, record)
-    assert floor is not None and floor.value == pytest.approx(math.log(1e-3))
+    assert floor is not None and floor[0] == pytest.approx(math.log(1e-3))
 
 
 # -------------------------------------------------------- drift responses
-def test_probe_all_after_drift_with_rereference_response() -> None:
+def test_after_drift_gate_with_rereference_response() -> None:
     inner = _FixedGate([], needs_score=True)
     detector = _ScriptedDetector(drift_at={3})
     sel = ThompsonSamplingSelector(
         budget=CUTOFF,
-        gate=ProbeAllAfterDrift(inner),
+        gate=AfterDriftGate(inner),
         detector=detector,
         drift_response=RereferenceResponse(),
         random_state=0,
@@ -346,7 +346,7 @@ def test_unsupported_response_or_policy_fails_at_fit() -> None:
         {"drift_response": RetrainResponse()},
         {"drift_response": ReweightResponse(0.5)},
         {"drift_response": RaiseExplorationResponse(2.0, steps=10)},
-        {"retrain_policy": PeriodicRetrain(10)},
+        {"retrain_every": 10},
     ):
         sel = ThompsonSamplingSelector(budget=CUTOFF, **kwargs)
         with pytest.raises(ValueError, match="does not implement"):
@@ -364,7 +364,7 @@ def test_rook_defaults_to_retrain_response_and_retrains_once_per_step() -> None:
     )
     assert (
         OnlinePairwiseSelector(
-            detector=_ScriptedDetector(set()), retrain_policy=PeriodicRetrain(5)
+            detector=_ScriptedDetector(set()), retrain_every=5
         ).drift_responses_
         == ()
     )
@@ -375,7 +375,7 @@ def test_rook_defaults_to_retrain_response_and_retrains_once_per_step() -> None:
         reference_period=20,
         detector=detector,
         drift_response=RetrainResponse(),
-        retrain_policy=PeriodicRetrain(30),
+        retrain_every=30,
         random_state=0,
     )
     res = run_prequential(sel, three_algo_stream())

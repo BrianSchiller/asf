@@ -369,7 +369,7 @@ def test_epm_cutoff_and_drop_targets() -> None:
 
 
 def test_epm_drop_does_not_learn_from_timeouts() -> None:
-    sel = _fitted_epm(imputation=DropCensored(), retrain_every=1)
+    sel = _fitted_epm(imputation=DropCensored(), update_every=1)
     features = pd.DataFrame([[0.0, 0.0]], index=["o0"], columns=["f0", "f1"])
     sel.observe(
         Observation("o0", features, {"a": EPM_CUTOFF}, frozenset({"a"}), EPM_CUTOFF)

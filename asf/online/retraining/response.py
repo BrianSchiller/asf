@@ -61,7 +61,7 @@ class RereferenceResponse(AbstractDriftResponse):
     Without it, a detector that is never re-referenced keeps comparing new
     data with its first reference and signals again and again after a
     change. Use it when the reaction to drift lies elsewhere (e.g. in
-    :class:`~asf.online.gate.ProbeAllAfterDrift`). A feature detector's own
+    :class:`~asf.online.gate.AfterDriftGate`). A feature detector's own
     settings (e.g. ``reference_size``) decide how much of the buffer it uses.
     """
 

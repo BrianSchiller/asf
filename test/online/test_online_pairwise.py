@@ -9,7 +9,6 @@ import pytest
 from asf.online.base import Observation
 from asf.online.drift import AbstractDriftDetector, DriftSignal
 from asf.online.evaluation import run_prequential
-from asf.online.retraining import PeriodicRetrain
 from asf.online.selectors import OnlinePairwiseSelector
 from asf.online.streams.stream import InstanceStream
 
@@ -158,9 +157,7 @@ def test_retraining_recovers_from_covariate_shift() -> None:
 
 def test_periodic_policy_without_detector() -> None:
     stream = covariate_shift_stream(60, 60)
-    sel = OnlinePairwiseSelector(
-        reference_period=20, retrain_policy=PeriodicRetrain(every=25), random_state=0
-    )
+    sel = OnlinePairwiseSelector(reference_period=20, retrain_every=25, random_state=0)
     res = run_prequential(sel, stream)
     assert len(res.retrain_steps) >= 3 and res.drift_steps == []
 

@@ -29,7 +29,7 @@ print(result.summary()["extra_run_rate"])
 4. **Gate.** The default `UncertaintyGate(threshold=0.25, n=1)` runs the first
    nominee if the uncertainty is at least 0.25 (that is, if the pair predicts
    at most 75 % for either side). Any other gate can be passed as `gate=`, e.g.
-   `AlwaysProbe(1)` to always run two algorithms like Rook et al., or
+   `AllNomineesGate(1)` to always run two algorithms like Rook et al., or
    `UncertaintyGate(rate=0.2)` to run a second algorithm on the 20 % most
    uncertain recent instances (see
    [Online Selection](online_selection.md#criteria-when-is-an-extra-run-worth-it)).
@@ -56,7 +56,7 @@ cast no vote, so on a cold start the gate fires until data arrives.
 | `window_size` | `None` | Buffer size; `None` keeps everything |
 
 Drift handling: `RetrainResponse` refits all models on the buffer,
-`ResetResponse` forgets all data seen so far, and a `retrain_policy` works as
+`ResetResponse` forgets all data seen so far, and `retrain_every` works as
 for every online selector.
 
 ## Differences from the paper

@@ -7,11 +7,7 @@ from asf.online.drift.ks_subspace_ensemble import KSSubspaceEnsembleDetector
 from asf.online.drift.ocdd import OneClassDriftDetector
 from asf.online.drift.pca_reconstruction import PCAReconstructionDetector
 from asf.online.drift.scalar import ADWINDetector, EDDMDetector
-from asf.online.drift.statistics import (
-    AbstractDriftStatistic,
-    LogRuntimeResidual,
-    ScalarSample,
-)
+from asf.online.drift.statistics import DriftStatistic, LogRuntimeResidual
 
 __all__ = [
     "AbstractDriftDetector",
@@ -22,7 +18,6 @@ __all__ = [
     "KSSubspaceEnsembleDetector",
     "OneClassDriftDetector",
     "PCAReconstructionDetector",
-    "AbstractDriftStatistic",
+    "DriftStatistic",
     "LogRuntimeResidual",
-    "ScalarSample",
 ]

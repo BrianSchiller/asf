@@ -90,7 +90,7 @@ Bandits fill the prediction record, so the gates of
 [online selection](online_selection.md#extra-run-gate) work on them:
 
 ```python
-from asf.online.gate import AlwaysProbe, UncertaintyGate
+from asf.online.gate import AllNomineesGate, UncertaintyGate
 from asf.online.selectors import LinTSSelector
 
 # a second arm on the 20% most uncertain recent instances
@@ -110,7 +110,7 @@ LinTSSelector(gate=UncertaintyGate(rate=0.2, random_state=0), budget=cutoff, ran
   chosen arm and the runner-up, as intersection over union: 0 for disjoint
   intervals, 1 for identical ones or if either arm has no data.
 * The uncertainty is only computed when a gate is set. Without one
-  (default: `NeverProbe`) the bandit draws nothing extra and behaves as
+  (default: `NoExtrasGate`) the bandit draws nothing extra and behaves as
   before. The draws are one numpy call per arm on the posteriors the decision
   already built; `uncertainty_samples=0` turns them off.
 * `predicted_runtime` is a predicted PAR10 value, since timeouts are learnt
@@ -132,7 +132,7 @@ arm Thompson Sampling or UCB would have played, or its runner-up if that is
 the greedy arm.
 
 ```python
-ThompsonSamplingSelector(primary="greedy", gate=AlwaysProbe(1), budget=cutoff, random_state=0)
+ThompsonSamplingSelector(primary="greedy", gate=AllNomineesGate(1), budget=cutoff, random_state=0)
 ```
 
 `scores` then holds the posterior means. Without a gate this never explores.

@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 
 from asf.online.base import AbstractOnlineSelector, Observation, random_argmax
-from asf.online.gate import AbstractExtraRunGate, NeverProbe
+from asf.online.gate import AbstractExtraRunGate, NoExtrasGate
 from asf.online.imputation import CensoredImputer
 from asf.online.prediction import PredictionRecord
 from asf.online.selectors.bandits.confidence import ConfidenceModel
@@ -294,7 +294,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         chosen = random_argmax(scores, self.rng_)
         others = [int(i) for i in ranking if i != chosen]
         uncertainty = None
-        if others and not isinstance(self.gate_, NeverProbe):
+        if others and not isinstance(self.gate_, NoExtrasGate):
             uncertainty = self._uncertainty(posteriors, chosen, others[0], x, t)
         model = posteriors[chosen][0]
         predicted = None
@@ -315,7 +315,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
 
     def _default_gate(self) -> AbstractExtraRunGate:
         """Bandits nominate arms but run one per step unless a gate is given."""
-        return NeverProbe()
+        return NoExtrasGate()
 
     def _uncertainty(
         self,

@@ -1,49 +1,28 @@
-"""Adapters turning an observation plus a prediction into a scalar for detectors."""
+"""
+Drift statistics: turn an observation plus the selector's prediction into the
+scalar a scalar drift detector consumes.
+
+A drift statistic is any callable ``(observation, prediction)`` returning
+``(value, censored)`` (``censored=True``: ``value`` is only a bound) or
+``None`` if there is nothing to feed to the detector.
+"""
 
 from __future__ import annotations
 
 import math
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal, Optional, Tuple
 
 from asf.online.prediction import PredictionRecord
 
 if TYPE_CHECKING:
     from asf.online.base import Observation
 
-
-@dataclass(frozen=True)
-class ScalarSample:
-    """
-    One value of a scalar drift stream.
-
-    Attributes
-    ----------
-    value : float
-        The statistic.
-    censored : bool, default=False
-        ``True`` if ``value`` is a bound rather than an exact value.
-    """
-
-    value: float
-    censored: bool = False
+DriftStatistic = Callable[
+    ["Observation", Optional[PredictionRecord]], Optional[Tuple[float, bool]]
+]
 
 
-class AbstractDriftStatistic(ABC):
-    """Maps ``(observation, prediction)`` to a :class:`ScalarSample`."""
-
-    @abstractmethod
-    def __call__(
-        self, observation: "Observation", prediction: PredictionRecord | None
-    ) -> ScalarSample | None:
-        """
-        Return the sample for this instance, or ``None`` if there is nothing
-        to feed to the detector (e.g. the selector made no runtime prediction).
-        """
-
-
-class LogRuntimeResidual(AbstractDriftStatistic):
+class LogRuntimeResidual:
     """
     ``log(observed) - log(predicted)`` runtime of the primary algorithm.
 
@@ -76,7 +55,7 @@ class LogRuntimeResidual(AbstractDriftStatistic):
 
     def __call__(
         self, observation: "Observation", prediction: PredictionRecord | None
-    ) -> ScalarSample | None:
+    ) -> tuple[float, bool] | None:
         if prediction is None or prediction.predicted_runtime is None:
             return None
         predicted = float(prediction.predicted_runtime)
@@ -92,4 +71,4 @@ class LogRuntimeResidual(AbstractDriftStatistic):
         value = math.log(max(observed, self.floor)) - math.log(
             max(predicted, self.floor)
         )
-        return ScalarSample(value=value, censored=is_censored)
+        return value, is_censored

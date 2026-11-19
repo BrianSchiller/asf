@@ -26,9 +26,18 @@ import numpy as np
 import pandas as pd
 
 from asf.online.streams.stream import InstanceStream
-from asf.online.streams.synthetic import _int_param
 
 Dataset = tuple[pd.DataFrame, pd.DataFrame, float]
+
+
+def _int_param(value: int, name: str, minimum: int = 1) -> int:
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, np.integer))
+        or value < minimum
+    ):
+        raise ValueError(f"{name} must be an integer >= {minimum}.")
+    return int(value)
 
 
 def combine_scenarios(

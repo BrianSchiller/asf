@@ -28,10 +28,9 @@ from asf.online.drift.abstract_detector import (
     AbstractDriftDetector,
     AbstractScalarDriftDetector,
 )
-from asf.online.drift.statistics import AbstractDriftStatistic
+from asf.online.drift.statistics import DriftStatistic
 from asf.online.gate import AbstractExtraRunGate
 from asf.online.prediction import PredictionRecord
-from asf.online.retraining.policy import AbstractRetrainPolicy
 from asf.online.retraining.response import RetrainResponse
 from asf.selectors.abstract_model_based_selector import AbstractModelBasedSelector
 
@@ -79,7 +78,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
     * **Retraining.** By default, a drift signal triggers a
       :class:`~asf.online.retraining.RetrainResponse`: all classifiers are
       retrained on the FULL history and the detector is refitted on it as
-      well. Hence ``window_size=None``. A ``retrain_policy`` retrains on a
+      well. Hence ``window_size=None``. ``retrain_every`` retrains on a
       schedule instead (drift signals are then only recorded unless a
       ``drift_response`` is given too).
     * **Extra runs.** The selector nominates its ``n_additional`` sampled
@@ -109,17 +108,16 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         Drift detector, fitted at the end of the reference period (or right
         after a warm start) and re-referenced after every retraining. The
         original detector only uses features.
-    drift_statistic : AbstractDriftStatistic or None, default=None
+    drift_statistic : DriftStatistic or None, default=None
         Required with a scalar detector, see
         :class:`~asf.online.base.AbstractOnlineSelector`.
     drift_response : AbstractDriftResponse, sequence of them, or None, default=None
         What to do on a drift signal. ``None`` defaults to
         ``RetrainResponse()`` if a detector is given and no
-        ``retrain_policy`` is, and to no response otherwise.
-    retrain_policy : AbstractRetrainPolicy or None, default=None
-        Schedule-based retraining, e.g. ``PeriodicRetrain``. The policy
-        receives the number of stream instances seen INCLUDING the current
-        one (the warm start is not counted).
+        ``retrain_every`` is, and to no response otherwise.
+    retrain_every : int or None, default=None
+        Retrain after every ``retrain_every`` stream instances (the current
+        one included, the warm start not counted).
     gate : AbstractExtraRunGate or None, default=None
         Extra-run gate; ``None`` runs all ``n_additional`` nominees.
     error_estimation_folds : int, default=5
@@ -150,16 +148,16 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         | None = None,
         reference_period: int | None = None,
         detector: AbstractDriftDetector | AbstractScalarDriftDetector | None = None,
-        retrain_policy: AbstractRetrainPolicy | None = None,
+        retrain_every: int | None = None,
         error_estimation_folds: int = 5,
         accuracy_floor: float = 1e-3,
         window_size: int | None = None,
         gate: AbstractExtraRunGate | None = None,
-        drift_statistic: AbstractDriftStatistic | None = None,
+        drift_statistic: DriftStatistic | None = None,
         drift_response: DriftResponses = None,
         **kwargs: Any,
     ) -> None:
-        if drift_response is None and detector is not None and retrain_policy is None:
+        if drift_response is None and detector is not None and retrain_every is None:
             drift_response = RetrainResponse()
         super().__init__(
             model_class=model_class,
@@ -168,7 +166,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
             detector=detector,
             drift_statistic=drift_statistic,
             drift_response=drift_response,
-            retrain_policy=retrain_policy,
+            retrain_every=retrain_every,
             **kwargs,
         )
         if variant not in ("paper", "code"):

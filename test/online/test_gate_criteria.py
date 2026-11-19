@@ -14,10 +14,10 @@ from asf.online.drift import AbstractDriftDetector, DriftSignal
 from asf.online.evaluation import describe, run_prequential
 from asf.online.gate import (
     AbstractExtraRunGate,
-    AlwaysProbe,
+    AllNomineesGate,
     CloseCallGate,
     GateContext,
-    NeverProbe,
+    NoExtrasGate,
     ScoreGate,
     TimeoutRiskGate,
     UncertaintyGate,
@@ -462,10 +462,10 @@ def _frugal_steps(gate: AbstractExtraRunGate) -> pd.DataFrame:
 
 def test_rate_one_is_always_two_and_rate_zero_is_never() -> None:
     always = _frugal_steps(UncertaintyGate(rate=1.0, random_state=0))
-    pd.testing.assert_frame_equal(always, _frugal_steps(AlwaysProbe(1)))
+    pd.testing.assert_frame_equal(always, _frugal_steps(AllNomineesGate(1)))
     assert (always["n_runs"] == 2).all()
     never = _frugal_steps(UncertaintyGate(rate=0.0, random_state=0))
-    pd.testing.assert_frame_equal(never, _frugal_steps(NeverProbe()))
+    pd.testing.assert_frame_equal(never, _frugal_steps(NoExtrasGate()))
     assert (never["n_runs"] == 1).all()
 
 

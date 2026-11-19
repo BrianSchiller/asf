@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 from asf.online.drift import KSSubspaceEnsembleDetector
 from asf.online.evaluation import run_prequential
-from asf.online.gate import ProbeAllAfterDrift, UncertaintyGate
-from asf.online.retraining import PeriodicRetrain, RereferenceResponse
+from asf.online.gate import AfterDriftGate, UncertaintyGate
+from asf.online.retraining import RereferenceResponse
 from asf.online.selectors import (
     FrugalPairwiseSelector,
     LinTSSelector,
@@ -60,9 +60,7 @@ SELECTORS = {
     "LinUCB": (LinUCBSelector(budget=cutoff, random_state=0), 0),
     "LinTS": (LinTSSelector(budget=cutoff, random_state=0), 0),
     "Online pairwise": (
-        OnlinePairwiseSelector(
-            reference_period=0, retrain_policy=PeriodicRetrain(100), random_state=0
-        ),
+        OnlinePairwiseSelector(reference_period=0, retrain_every=100, random_state=0),
         0,
     ),
     "Frugal pairwise": (
@@ -72,7 +70,7 @@ SELECTORS = {
     "Frugal + KS": (
         FrugalPairwiseSelector(
             candidate_order="runner_up",
-            gate=ProbeAllAfterDrift(UncertaintyGate(threshold=0.25, n=1)),
+            gate=AfterDriftGate(UncertaintyGate(threshold=0.25, n=1)),
             detector=KSSubspaceEnsembleDetector(reference_size=WARM, random_state=0),
             detector_reference_size=WARM,
             drift_response=RereferenceResponse(),

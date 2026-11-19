@@ -9,7 +9,7 @@ Two kinds of detectors exist:
 * :class:`AbstractScalarDriftDetector` -- *scalar-stream*: sees one number
   per instance (e.g. a prediction residual) and needs no reference data.
   Examples: ADWIN, EDDM. An
-  :class:`~asf.online.drift.statistics.AbstractDriftStatistic` turns an
+  :data:`~asf.online.drift.statistics.DriftStatistic` turns an
   observation plus the selector's prediction into that number.
 
 Both report a :class:`DriftSignal` per update.
@@ -148,7 +148,7 @@ class AbstractScalarDriftDetector(ABC):
     Base class for detectors on a stream of scalars (ADWIN, EDDM, ...).
 
     The detector sees one value per instance, typically produced by an
-    :class:`~asf.online.drift.statistics.AbstractDriftStatistic` from the
+    :data:`~asf.online.drift.statistics.DriftStatistic` from the
     observation and the selector's prediction. It needs no reference fit.
     All window sizes, confidence levels and thresholds must be constructor
     parameters.

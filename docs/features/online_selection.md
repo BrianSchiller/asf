@@ -28,7 +28,7 @@ observe:  buffer.append(obs); _observe(obs)           # subclass learns
           gate.observe(last_prediction_, obs)         # gate sees the outcome
           signal = detector.update(...)               # feature or scalar detector
           if signal.drift: on_drift(signal)           # drift responses
-          if retrain_policy.should_retrain(...): retrain()
+          every retrain_every instances: retrain()
           re-reference the detector if the model was rebuilt
 ```
 
@@ -103,10 +103,10 @@ detector's per-instance score (`instance_score`, computed only if
 last drift. `context.ranked_alternatives()` lists all other algorithms, the
 nominees first and then by descending score.
 
-`AlwaysProbe(n=None)` runs the first `n` nominees (all by default) and is the
+`AllNomineesGate(n=None)` runs the first `n` nominees (all by default) and is the
 default gate, so every selector keeps its built-in behaviour: the Rook
-selector runs `n_additional` extras, the bandits none. `NeverProbe()` runs
-none. `ProbeAllAfterDrift(gate)` runs every algorithm on the first instance
+selector runs `n_additional` extras, the bandits none. `NoExtrasGate()` runs
+none. `AfterDriftGate(gate)` runs every algorithm on the first instance
 after a drift signal and leaves all other instances to `gate`. The selector
 rejects unknown algorithms and drops duplicates and the primary choice from a
 gate's answer.
@@ -216,8 +216,8 @@ Two kinds of detectors (`asf.online.drift`) can be passed as `detector=`:
   start, or after `detector_reference_size` instances on a cold start.
 * `AbstractScalarDriftDetector`, for ADWIN/EDDM-style methods on one number
   per instance: `update(value, censored=False) -> DriftSignal`, `reset()`.
-  It needs a `drift_statistic`, an `AbstractDriftStatistic` that turns
-  `(observation, prediction)` into a `ScalarSample(value, censored)`.
+  It needs a `drift_statistic`: any callable that turns
+  `(observation, prediction)` into a `(value, censored)` pair (or `None`).
   `LogRuntimeResidual` gives `log(observed) - log(predicted)` runtime of the
   primary run; censored runs are passed on as lower bounds
   (`censored="emit"`) or dropped (`"skip"`).
@@ -234,8 +234,8 @@ When the detector signals drift, `on_drift(signal)` runs the configured
 | `RaiseExplorationResponse(factor, steps)` | `_boost_exploration` | planned |
 
 After a retrain or reset the detector is re-referenced (refitted on the
-buffer, or reset if scalar). A `retrain_policy` (e.g. `PeriodicRetrain`) is
-independent of drift signals: it is checked after every instance; if a drift
+buffer, or reset if scalar). `retrain_every=N` retrains after
+every N stream instances, independently of drift signals; if a drift
 response already retrained on that instance, it does not retrain again.
 
 `PCAReconstructionDetector` re-implements the NannyML-style detector used by
@@ -520,12 +520,12 @@ selector = OnlineEPMSelector(
   `imputation_max_iter` fits). Use it with `target_transform="log10"`; it
   costs up to `imputation_max_iter + 1` fits per update for every algorithm
   with unsolved runs. `SampledImputer` has no batch version here.
-* **Updates**: models are refitted every `retrain_every=10` new data points
+* **Updates**: models are refitted every `update_every=10` new data points
   (extra runs count), only those whose data changed. Algorithms without data
   are tried first; a model is fitted on an algorithm's first observation. By
   default all data is kept (`window_size=None`).
-* **Runs**: one per instance (default gate `NeverProbe`). The paper's
-  `allData` upper bound is `gate=AlwaysProbe()` with `result_mode="primary"`.
+* **Runs**: one per instance (default gate `NoExtrasGate`). The paper's
+  `allData` upper bound is `gate=AllNomineesGate()` with `result_mode="primary"`.
 * **Drift responses**: `RetrainResponse` (refit now) and `ResetResponse`
   (forget all data and models).
 
@@ -534,7 +534,5 @@ fit on one core. Set `n_jobs` on the estimator, or use fewer trees for
 pilots.
 
 See `examples/online/` for runnable examples.
-See [Synthetic streams](synthetic_streams.md) to configure stationary, sudden,
-gradual and recurring covariate shifts for selector experiments, and
-[Streams from benchmark data](stream_construction.md) to build drifting
+See [Streams from benchmark data](stream_construction.md) to build drifting
 streams from ASlib scenarios (switching, sorting, clustering).
