@@ -149,6 +149,40 @@ class NeverProbe(AbstractExtraRunGate):
         return ()
 
 
+class ProbeAllAfterDrift(AbstractExtraRunGate):
+    """
+    Run every algorithm on the first instance after a drift signal.
+
+    One full round of runs right after a detected change gives the selector
+    a labelled comparison of all algorithms on the new data (for a pairwise
+    selector: one example for every pair). On all other instances ``gate``
+    decides.
+
+    Parameters
+    ----------
+    gate : AbstractExtraRunGate or None, default=None
+        Gate for all other instances; ``None`` runs no extras there.
+    """
+
+    def __init__(self, gate: AbstractExtraRunGate | None = None) -> None:
+        self.gate = gate if gate is not None else NeverProbe()
+
+    @property
+    def needs_instance_score(self) -> bool:  # type: ignore[override]
+        return self.gate.needs_instance_score
+
+    def extras(self, context: GateContext) -> Sequence[str]:
+        if context.steps_since_drift == 1:  # the signal came on the previous instance
+            return context.ranked_alternatives()
+        return self.gate.extras(context)
+
+    def observe(self, prediction: PredictionRecord, observation: "Observation") -> None:
+        self.gate.observe(prediction, observation)
+
+    def reset(self) -> None:
+        self.gate.reset()
+
+
 class AlwaysProbe(AbstractExtraRunGate):
     """
     Always run the first ``n`` nominees (all of them for ``n=None``).

@@ -106,8 +106,10 @@ nominees first and then by descending score.
 `AlwaysProbe(n=None)` runs the first `n` nominees (all by default) and is the
 default gate, so every selector keeps its built-in behaviour: the Rook
 selector runs `n_additional` extras, the bandits none. `NeverProbe()` runs
-none. The selector rejects unknown algorithms and drops duplicates and the
-primary choice from a gate's answer.
+none. `ProbeAllAfterDrift(gate)` runs every algorithm on the first instance
+after a drift signal and leaves all other instances to `gate`. The selector
+rejects unknown algorithms and drops duplicates and the primary choice from a
+gate's answer.
 
 #### Criteria: when is an extra run worth it?
 
@@ -224,6 +226,7 @@ When the detector signals drift, `on_drift(signal)` runs the configured
 
 | Response | Selector hook | Implemented by |
 |---|---|---|
+| `RereferenceResponse()` | none | every selector (only re-references the detector) |
 | `RetrainResponse()` | `_retrain` | `OnlinePairwiseSelector` (the default with a detector), `OnlineEPMSelector` |
 | `ResetResponse()` | `_reset_model` | bandits (`reset_arms`), `OnlineEPMSelector` |
 | `ReweightResponse(factor)` | `_discount_history` | planned |

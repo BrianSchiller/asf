@@ -23,11 +23,13 @@ from asf.online.gate import (
     AlwaysProbe,
     GateContext,
     NeverProbe,
+    ProbeAllAfterDrift,
 )
 from asf.online.prediction import PredictionRecord
 from asf.online.retraining import (
     PeriodicRetrain,
     RaiseExplorationResponse,
+    RereferenceResponse,
     ResetResponse,
     RetrainResponse,
     ReweightResponse,
@@ -285,6 +287,28 @@ def test_log_residual_censoring_and_missing_prediction() -> None:
 
 
 # -------------------------------------------------------- drift responses
+def test_probe_all_after_drift_with_rereference_response() -> None:
+    inner = _FixedGate([], needs_score=True)
+    detector = _ScriptedDetector(drift_at={3})
+    sel = ThompsonSamplingSelector(
+        budget=CUTOFF,
+        gate=ProbeAllAfterDrift(inner),
+        detector=detector,
+        drift_response=RereferenceResponse(),
+        random_state=0,
+    )
+    res = run_prequential(sel, three_algo_stream(), n_warmstart=10)
+    steps = res.steps
+    assert res.drift_steps == [2]  # drift on the 3rd update
+    assert steps["response"].iloc[2] == "rereference"
+    assert detector.n_resets == 1  # only re-referenced, nothing else
+    # all algorithms right after the signal; the inner gate (no extras) elsewhere
+    assert steps["n_runs"].iloc[3] == 3
+    assert set(steps["n_runs"].drop(index=3)) == {1}
+    assert len(inner.contexts) == len(steps) - 1
+    assert (steps["instance_score"] == 0.25).all()  # inner gate asked for it
+
+
 def test_reset_response_resets_bandit_and_rereferences_detector() -> None:
     detector = _ScriptedDetector(drift_at={5})
     sel = DiscountedTSSelector(

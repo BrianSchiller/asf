@@ -5,8 +5,9 @@ The stream plays half of each scenario, then the other halves:
 HAND, INDU, RAND, HAND, INDU, RAND (five switches, covariate drift only).
 
 The static selector is trained on the first 100 instances (warm start); all
-other selectors start cold on the whole stream. All are compared on the same
-instances: everything after the first 100.
+other selectors start cold on the whole stream. "Frugal + KS" adds a drift
+detector to the frugal selector and runs every solver once after each alarm.
+All are compared on the same instances: everything after the first 100.
 
 Features are median-imputed and standardised with statistics of the first
 100 instances only (no runtimes), so the linear bandits get usable contexts
@@ -19,8 +20,10 @@ import sys
 
 import numpy as np
 import pandas as pd
+from asf.online.drift import KSSubspaceEnsembleDetector
 from asf.online.evaluation import run_prequential
-from asf.online.retraining import PeriodicRetrain
+from asf.online.gate import ProbeAllAfterDrift, UncertaintyGate
+from asf.online.retraining import PeriodicRetrain, RereferenceResponse
 from asf.online.selectors import (
     FrugalPairwiseSelector,
     LinTSSelector,
@@ -66,6 +69,17 @@ SELECTORS = {
         FrugalPairwiseSelector(candidate_order="runner_up", random_state=0),
         0,
     ),
+    "Frugal + KS": (
+        FrugalPairwiseSelector(
+            candidate_order="runner_up",
+            gate=ProbeAllAfterDrift(UncertaintyGate(threshold=0.25, n=1)),
+            detector=KSSubspaceEnsembleDetector(reference_size=WARM, random_state=0),
+            detector_reference_size=WARM,
+            drift_response=RereferenceResponse(),
+            random_state=0,
+        ),
+        0,
+    ),
     "Static multi-class": (
         StaticOnlineSelector(MultiClassClassifier(random_state=0)),
         WARM,
@@ -88,13 +102,13 @@ def hours(costs: pd.Series) -> pd.Series:
     return out / 3600
 
 
-user, compute, extra, solved, decide = {}, {}, {}, {}, {}
+user, compute, runs, solved, decide = {}, {}, {}, {}, {}
 for name, (selector, n_warm) in SELECTORS.items():
     steps = run_prequential(selector, stream, n_warmstart=n_warm, par_factor=PAR).steps
     steps.index = steps["step"] + n_warm  # position in the full stream
     steps = steps.loc[WARM:]
     user[name], compute[name] = hours(steps["user_cost"]), hours(steps["compute_cost"])
-    extra[name] = (steps["n_runs"] > 1).mean()
+    runs[name] = steps["n_runs"].sum()  # solver runs, extra runs included
     solved[name] = (steps["user_cost"] < PAR * cutoff).mean()
     decide[name] = (steps["selector_seconds"] + steps["detector_seconds"]).sum()
     print(f"done: {name}")
@@ -111,14 +125,14 @@ print(f"\nPAR{PAR:g} runtime the user gets, in hours (instances {WARM}-{len(stre
 print(pd.DataFrame(user).T.round(1).to_string())
 print(
     "\nTotals: user PAR10 and compute (all runs, extra runs included) in hours,"
-    " solved share, selector decision time in seconds:"
+    " number of solver runs, solved share, selector decision time in seconds:"
 )
 print(
     pd.DataFrame(
         {
             "user PAR10": {k: v["total"] for k, v in user.items()},
             "compute": {k: v["total"] for k, v in compute.items()},
-            "extra-run rate": extra,
+            "solvers run": runs,
             "solved": solved,
             "decision s": decide,
         }

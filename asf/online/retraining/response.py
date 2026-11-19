@@ -9,6 +9,7 @@ when the selector is fitted.
 ==============================  ======================  =====================
 Response                        Selector hook           Implemented by (F1)
 ==============================  ======================  =====================
+:class:`RereferenceResponse`    -- (none)               every selector
 :class:`RetrainResponse`        ``_retrain``            OnlinePairwiseSelector
 :class:`ResetResponse`          ``_reset_model``        bandits (``reset_arms``)
 :class:`ReweightResponse`       ``_discount_history``   -- (planned)
@@ -18,6 +19,7 @@ Response                        Selector hook           Implemented by (F1)
 Retrain and reset rebuild the selector's model, so the selector re-references
 its detector afterwards (refit on the current buffer, or reset for scalar
 detectors). Reweighting and raising exploration keep the model and do not.
+:class:`RereferenceResponse` only re-references the detector.
 """
 
 from __future__ import annotations
@@ -50,6 +52,25 @@ class AbstractDriftResponse(ABC):
     @abstractmethod
     def respond(self, selector: "AbstractOnlineSelector", signal: DriftSignal) -> None:
         """React to ``signal`` by calling the selector's hook."""
+
+
+class RereferenceResponse(AbstractDriftResponse):
+    """
+    Only re-reference the detector on the current buffer; keep the model.
+
+    Without it, a detector that is never re-referenced keeps comparing new
+    data with its first reference and signals again and again after a
+    change. Use it when the reaction to drift lies elsewhere (e.g. in
+    :class:`~asf.online.gate.ProbeAllAfterDrift`). A feature detector's own
+    settings (e.g. ``reference_size``) decide how much of the buffer it uses.
+    """
+
+    NAME = "rereference"
+    # Needs no capability hook; every online selector implements ``_observe``.
+    REQUIRES = "_observe"
+
+    def respond(self, selector: "AbstractOnlineSelector", signal: DriftSignal) -> None:
+        selector.rereference_detector()
 
 
 class RetrainResponse(AbstractDriftResponse):
