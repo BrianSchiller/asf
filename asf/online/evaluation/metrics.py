@@ -8,7 +8,7 @@ import numpy as np
 
 
 def penalised_runtime(runtime: float, cutoff: float, par_factor: float = 10.0) -> float:
-    """PAR-k score of one run: the runtime if below ``cutoff``, else ``cutoff * par_factor``."""
+    """PAR-k score of one run: the runtime if below ``cutoff``, else the penalty."""
     return float(runtime) if runtime < cutoff else float(cutoff * par_factor)
 
 

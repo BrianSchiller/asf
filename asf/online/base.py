@@ -37,6 +37,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 
 from asf.online.buffer import ObservationBuffer
@@ -248,20 +249,24 @@ class AbstractOnlineSelector(AbstractSelector):
         )
 
         self.buffer: ObservationBuffer | None = None
-        self.step_: int = 0
-        self.n_seen_: int = 0
+        self._reset_state(n_warmstart=0)
+        self._retrained_this_step = False
+        self._rereference_pending = False
+
+    def _reset_state(self, n_warmstart: int) -> None:
+        """Clear the stream bookkeeping (in ``__init__`` and at every ``fit``)."""
+        self.step_ = 0
+        self.n_seen_ = n_warmstart
+        self._n_warmstart = n_warmstart
         self.retrain_steps: list[int] = []
-        self.retrain_seconds: float = 0.0
+        self.retrain_seconds = 0.0
         self.drift_steps: list[int] = []
-        self.detector_ready_: bool = False
+        self.detector_ready_ = False
         self.last_prediction_: PredictionRecord | None = None
         self.last_trace_: StepTrace | None = None
         self.last_signal_: DriftSignal | None = None
         self.last_drift_step_: int | None = None
         self._trace: StepTrace | None = None
-        self._n_warmstart = 0
-        self._retrained_this_step = False
-        self._rereference_pending = False
 
     # ------------------------------------------------------------------ fit
     def _fit(
@@ -272,18 +277,7 @@ class AbstractOnlineSelector(AbstractSelector):
     ) -> None:
         """Seed the buffer with the warm-start data, then fit the initial model."""
         self._check_components(n_warmstart=len(features))
-        self.step_ = 0
-        self.n_seen_ = len(features)
-        self._n_warmstart = len(features)
-        self.retrain_steps = []
-        self.retrain_seconds = 0.0
-        self.drift_steps = []
-        self.detector_ready_ = False
-        self.last_prediction_ = None
-        self.last_trace_ = None
-        self.last_signal_ = None
-        self.last_drift_step_ = None
-        self._trace = None
+        self._reset_state(n_warmstart=len(features))
         self.gate_.reset()
         self.buffer = ObservationBuffer(
             algorithms=self.algorithms,
@@ -349,7 +343,6 @@ class AbstractOnlineSelector(AbstractSelector):
             trace.instance_score = self._instance_score(features)
         context = GateContext(
             prediction=record,
-            candidates=tuple(record.candidates),
             algorithms=tuple(self.algorithms),
             features=features,
             step=self.step_,
@@ -377,15 +370,7 @@ class AbstractOnlineSelector(AbstractSelector):
         """
         self._check_fitted()
         assert self.buffer is not None
-        obs = observation
-        if self.hierarchical_generator is not None:
-            obs = Observation(
-                instance_id=obs.instance_id,
-                features=self._augment(obs.features),
-                runtimes=obs.runtimes,
-                censored=obs.censored,
-                cutoff=obs.cutoff,
-            )
+        obs = replace(observation, features=self._augment(observation.features))
         trace = self._trace if self._trace is not None else StepTrace(self.step_)
         self._trace = trace
         self._retrained_this_step = False
@@ -437,10 +422,10 @@ class AbstractOnlineSelector(AbstractSelector):
 
     def retrain(self) -> None:
         """Retrain now (timed and recorded); the detector is re-referenced."""
-        with _Timer() as timer:
-            self._retrain()
+        start = time.perf_counter()
+        self._retrain()
         self.retrain_steps.append(self.step_)
-        self.retrain_seconds += timer.seconds
+        self.retrain_seconds += time.perf_counter() - start
         self._retrained_this_step = True
         self._rereference_pending = True
 
@@ -453,31 +438,26 @@ class AbstractOnlineSelector(AbstractSelector):
         """Fit a feature detector on the buffer (reset a scalar one)."""
         if self.detector is None or self.buffer is None:
             return
-        if isinstance(self.detector, AbstractScalarDriftDetector):
-            with _Timer() as timer:
-                self.detector.reset()
-        else:
-            if len(self.buffer) == 0:
-                return
-            X, P = self.buffer.features(), self.buffer.performance()
-            with _Timer() as timer:
-                self.detector.fit(X, P)
-        self._add_detector_seconds(timer.seconds)
+        if isinstance(self.detector, AbstractDriftDetector) and len(self.buffer) == 0:
+            return
+        self._reference_detector("fit")
         self.detector_ready_ = True
 
     def rereference_detector(self) -> None:
         """Re-reference a fitted detector after the model was rebuilt."""
-        if self.detector is None or self.buffer is None or not self.detector_ready_:
-            return
+        if self.detector_ready_:  # implies a detector and a buffer
+            self._reference_detector("reset")
+        self._rereference_pending = False
+
+    def _reference_detector(self, method: str) -> None:
+        """Call a feature detector's ``fit``/``reset`` on the buffer; a scalar
+        detector is just ``reset()``."""
+        assert self.detector is not None and self.buffer is not None
         if isinstance(self.detector, AbstractScalarDriftDetector):
-            with _Timer() as timer:
-                self.detector.reset()
+            self._time_detector(self.detector.reset)
         else:
             X, P = self.buffer.features(), self.buffer.performance()
-            with _Timer() as timer:
-                self.detector.reset(X, P)
-        self._add_detector_seconds(timer.seconds)
-        self._rereference_pending = False
+            self._time_detector(getattr(self.detector, method), X, P)
 
     def supports(self, hook: str) -> bool:
         """Whether this selector overrides the capability hook ``hook``."""
@@ -569,33 +549,33 @@ class AbstractOnlineSelector(AbstractSelector):
     def _detect(self, obs: Observation, trace: StepTrace) -> DriftSignal | None:
         if self.detector is None or not self.detector_ready_:
             return None
-        with _Timer() as timer:
-            if isinstance(self.detector, AbstractScalarDriftDetector):
-                assert self.drift_statistic is not None
-                sample = self.drift_statistic(obs, trace.prediction)
-                if sample is None:
-                    signal = None
-                else:
-                    trace.drift_statistic = float(sample.value)
-                    signal = self.detector.update(sample.value, sample.censored)
-            else:
-                signal = self.detector.update(obs.features, self._performance_row(obs))
-        self._add_detector_seconds(timer.seconds)
-        return signal
+        if isinstance(self.detector, AbstractScalarDriftDetector):
+            assert self.drift_statistic is not None
+            sample = self.drift_statistic(obs, trace.prediction)
+            if sample is None:
+                return None
+            trace.drift_statistic = float(sample.value)
+            return self._time_detector(
+                self.detector.update, sample.value, sample.censored
+            )
+        return self._time_detector(
+            self.detector.update, obs.features, self._performance_row(obs)
+        )
 
     def _instance_score(self, features: pd.DataFrame) -> float | None:
         if not isinstance(self.detector, AbstractDriftDetector) or not (
             self.detector_ready_
         ):
             return None
-        with _Timer() as timer:
-            score = float(self.detector.score(features)[0])
-        self._add_detector_seconds(timer.seconds)
-        return score
+        return float(self._time_detector(self.detector.score, features)[0])
 
-    def _add_detector_seconds(self, seconds: float) -> None:
+    def _time_detector(self, call: Callable[..., Any], *args: Any) -> Any:
+        """Run a detector call and add its wall-clock time to the step trace."""
+        start = time.perf_counter()
+        out = call(*args)
         if self._trace is not None:
-            self._trace.detector_seconds += float(seconds)
+            self._trace.detector_seconds += time.perf_counter() - start
+        return out
 
     def _clean_extras(self, extras: Sequence[str], chosen: str) -> tuple[str, ...]:
         """Validate the gate's answer; drop duplicates and the primary choice."""
@@ -631,6 +611,11 @@ class AbstractOnlineSelector(AbstractSelector):
     def _check_fitted(self) -> None:
         if self.buffer is None:
             raise RuntimeError("Call fit() with warm-start data before streaming.")
+
+
+def random_argmax(values: np.ndarray, rng: np.random.Generator) -> int:
+    """Index of the largest value; ties are broken uniformly at random."""
+    return int(rng.choice(np.flatnonzero(values == values.max())))
 
 
 def _as_responses(value: DriftResponses) -> tuple[AbstractDriftResponse, ...]:
@@ -675,15 +660,3 @@ def _capture_init_params(init: Callable[..., None]) -> Callable[..., None]:
         self.init_params_ = params
 
     return wrapper
-
-
-class _Timer:
-    """Tiny wall-clock timer used as a context manager."""
-
-    def __enter__(self) -> "_Timer":
-        self._start = time.perf_counter()
-        self.seconds = 0.0
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.seconds = time.perf_counter() - self._start

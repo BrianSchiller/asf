@@ -274,7 +274,6 @@ default="guided"
         self.reference_size = None if reference_size is None else int(reference_size)
         self.random_state = random_state
 
-        self._fitted = False
         self._reference: list[np.ndarray] = []
         self._low = np.empty(0)
         self._high = np.empty(0)
@@ -293,12 +292,7 @@ default="guided"
         self, features: pd.DataFrame, performance: pd.DataFrame | None = None
     ) -> "KSSubspaceEnsembleDetector":
         """Take ``features`` as reference, build the subspaces, clear the window."""
-        if len(features) < 2:
-            raise ValueError("At least two reference instances are required.")
-        if features.shape[1] == 0:
-            raise ValueError("At least one feature is required.")
-        self.feature_names_ = [str(c) for c in features.columns]
-        X = features.to_numpy(float)
+        X = self._reference_matrix(features)
         if self.reference_size is not None:
             X = X[-self.reference_size :]
 
@@ -315,7 +309,6 @@ default="guided"
         self._since_check = 0
         self.last_votes_ = None
         self.last_score_ = None
-        self._fitted = True
         return self
 
     def _make_subspaces(self, X: np.ndarray) -> list[list[int]]:
@@ -349,16 +342,7 @@ default="guided"
         Accepts one or several rows; if several rows complete several checks,
         the signal reports drift if any of them did.
         """
-        drift = False
-        for row in self._matrix(features):
-            self._window.append(row)
-            self._since_check += 1
-            if (
-                len(self._window) == self.window_size
-                and self._since_check >= self.stride
-            ):
-                self._since_check = 0
-                drift |= self._check()
+        drift = self._strided_checks(self._matrix(features), self._window, self._check)
         return DriftSignal(drift=drift, score=self.last_score_)
 
     def _check(self) -> bool:
@@ -393,15 +377,3 @@ default="guided"
         outside = (X < self._low) | (X > self._high)
         shares = np.column_stack([outside[:, g].mean(axis=1) for g in self._groups])
         return shares.max(axis=1)
-
-    def _matrix(self, features: pd.DataFrame) -> np.ndarray:
-        if not self._fitted:
-            raise RuntimeError("Call fit() before update()/score().")
-        if list(features.columns) == self.feature_names_:
-            return features.to_numpy(float)
-        missing = [
-            c for c in self.feature_names_ if c not in map(str, features.columns)
-        ]
-        if missing:
-            raise ValueError(f"Missing feature columns: {missing[:5]}")
-        return features.rename(columns=str)[self.feature_names_].to_numpy(float)

@@ -204,7 +204,7 @@ class FDSWTSSelector(AbstractContextualBandit):
         Discount factor of the historic trace.
     window : int, default=30
         Per-arm window size ``n`` of the hot trace.
-    aggregate : {"mean", "min", "max"} or callable, default="mean"
+    aggregate : {"mean", "min", "max"}, default="mean"
         The aggregation function ``f``.
     **kwargs : Any
         Forwarded to :class:`AbstractContextualBandit`.
@@ -214,7 +214,7 @@ class FDSWTSSelector(AbstractContextualBandit):
         self,
         gamma: float = 0.99,
         window: int = 30,
-        aggregate: str | Aggregate = "mean",
+        aggregate: Aggregate = "mean",
         **kwargs: Any,
     ) -> None:
         kwargs.setdefault("reward", RewardTransform("unit"))

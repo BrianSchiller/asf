@@ -293,13 +293,6 @@ class ADWINDetector(_CensoredInput, AbstractScalarDriftDetector):
         differs = np.abs(difference) >= eps
         return bool(differs.any()), bool((differs & (difference > 0)).any())
 
-    def __repr__(self) -> str:
-        return (
-            f"ADWINDetector(delta={self.delta}, value_range={self.value_range}, "
-            f"bound={self.bound!r}, direction={self.direction!r}, "
-            f"imputation={self.imputation!r}, random_state={self.random_state})"
-        )
-
 
 class EDDMDetector(_CensoredInput, AbstractScalarDriftDetector):
     """
@@ -436,10 +429,3 @@ class EDDMDetector(_CensoredInput, AbstractScalarDriftDetector):
         if drift:
             self.reset()
         return signal
-
-    def __repr__(self) -> str:
-        return (
-            f"EDDMDetector(error_threshold={self.error_threshold}, "
-            f"alpha={self.alpha}, beta={self.beta}, min_errors={self.min_errors}, "
-            f"imputation={self.imputation!r}, random_state={self.random_state})"
-        )

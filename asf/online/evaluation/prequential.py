@@ -22,7 +22,6 @@ from asf.online.evaluation.provenance import asf_provenance, describe
 from asf.online.streams.stream import InstanceStream
 
 ResultMode = Literal["primary", "best_of_scheduled"]
-Protocol = Literal["warm", "cold"]
 
 #: Version of the on-disk format written by :meth:`OnlineResult.save`.
 SCHEMA_VERSION = 1
@@ -248,7 +247,6 @@ def run_prequential(
     par_factor: float = 10.0,
     result_mode: ResultMode | None = None,
     fit_kwargs: dict[str, Any] | None = None,
-    protocol: Protocol | None = None,
     stream_seed: int | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> OnlineResult:
@@ -309,9 +307,6 @@ def run_prequential(
         Scoring mode; ``None`` uses ``selector.RESULT_MODE``.
     fit_kwargs : dict or None
         Extra keyword arguments for ``selector.fit``.
-    protocol : {"warm", "cold"} or None, default=None
-        Experimental protocol; checked against ``n_warmstart`` (``None`` =
-        inferred from it).
     stream_seed : int or None, default=None
         Seed the stream was generated or shuffled with; stored as
         ``meta["stream"]["seed"]``.
@@ -321,20 +316,11 @@ def run_prequential(
     mode = result_mode or selector.RESULT_MODE
     if mode not in ("primary", "best_of_scheduled"):
         raise ValueError(f"Unknown result_mode: {mode!r}")
-    inferred: Protocol = "warm" if n_warmstart > 0 else "cold"
-    if protocol is None:
-        protocol = inferred
-    if protocol not in ("warm", "cold"):
-        raise ValueError(f"Unknown protocol: {protocol!r}")
-    if protocol != inferred:
-        raise ValueError(
-            f"protocol={protocol!r} does not match n_warmstart={n_warmstart} "
-            "(warm needs n_warmstart >= 1, cold needs n_warmstart == 0)."
-        )
+    protocol = "warm" if n_warmstart > 0 else "cold"
     if protocol == "cold" and not selector.SUPPORTS_COLD_START:
         raise ValueError(
             f"{type(selector).__name__} needs a warm start (SUPPORTS_COLD_START "
-            "is False); use protocol='warm'."
+            "is False); use n_warmstart >= 1."
         )
     provenance = asf_provenance()
     warm, tail = stream.split(n_warmstart)

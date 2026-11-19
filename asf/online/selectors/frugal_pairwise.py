@@ -19,7 +19,12 @@ from sklearn.base import ClassifierMixin
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble._forest import ForestClassifier
 
-from asf.online.base import AbstractOnlineSelector, DriftResponses, Observation
+from asf.online.base import (
+    AbstractOnlineSelector,
+    DriftResponses,
+    Observation,
+    random_argmax,
+)
 from asf.online.drift.abstract_detector import (
     AbstractDriftDetector,
     AbstractScalarDriftDetector,
@@ -222,15 +227,14 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         probs = self._pair_probabilities(x)[0]
         timeouts = self._predicted_timeouts(x)[0]
         votes = self._votes(probs, timeouts)
-        chosen = int(self._rng.choice(np.flatnonzero(votes == votes.max())))
+        chosen = random_argmax(votes, self._rng)
 
         others = np.array([a for a in range(len(self.algorithms)) if a != chosen])
         if self.timeout_filter and timeouts[chosen]:
             others = others[~timeouts[others]]
         uncertainty = least_confidence(probs[chosen, others])
         if self.candidate_order == "runner_up" and len(others):
-            runner_up = votes[others] == votes[others].max()
-            k = int(self._rng.choice(np.flatnonzero(runner_up)))
+            k = random_argmax(votes[others], self._rng)
             others, uncertainty = others[[k]], uncertainty[[k]]
         if self.candidate_order == "random":
             order = self._rng.permutation(len(others))

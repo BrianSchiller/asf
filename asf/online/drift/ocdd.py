@@ -165,12 +165,7 @@ class OneClassDriftDetector(AbstractDriftDetector):
         self, features: pd.DataFrame, performance: pd.DataFrame | None = None
     ) -> "OneClassDriftDetector":
         """Train the one-class SVM on ``features`` and empty the window."""
-        if len(features) < 2:
-            raise ValueError("At least two reference instances are required.")
-        if features.shape[1] == 0:
-            raise ValueError("At least one feature is required.")
-        self.feature_names_ = [str(c) for c in features.columns]
-        self._train(features.to_numpy(float))
+        self._train(self._reference_matrix(features))
         self._rows.clear()
         self._flags.clear()
         self.last_outlier_share_ = None
@@ -268,15 +263,3 @@ class OneClassDriftDetector(AbstractDriftDetector):
         buffer would mix instances from before and after the drift, whereas
         the detector has already retrained on the newest window instances.
         """
-
-    def _matrix(self, features: pd.DataFrame) -> np.ndarray:
-        if self._model is None:
-            raise RuntimeError("Call fit() before update()/score().")
-        if list(features.columns) == self.feature_names_:
-            return features.to_numpy(float)
-        missing = [
-            c for c in self.feature_names_ if c not in map(str, features.columns)
-        ]
-        if missing:
-            raise ValueError(f"Missing feature columns: {missing[:5]}")
-        return features.rename(columns=str)[self.feature_names_].to_numpy(float)

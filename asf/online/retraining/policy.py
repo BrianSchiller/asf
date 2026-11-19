@@ -35,4 +35,3 @@ class PeriodicRetrain(AbstractRetrainPolicy):
 
     def should_retrain(self, step: int, signal: DriftSignal | None = None) -> bool:
         return step % self.every == 0
-

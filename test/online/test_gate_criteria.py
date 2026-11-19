@@ -15,14 +15,12 @@ from asf.online.evaluation import describe, run_prequential
 from asf.online.gate import (
     AbstractExtraRunGate,
     AlwaysProbe,
+    CloseCallGate,
     GateContext,
     NeverProbe,
     ScoreGate,
-    UncertaintyGate,
-)
-from asf.online.gate_criteria import (
-    CloseCallGate,
     TimeoutRiskGate,
+    UncertaintyGate,
     UnfamiliarityGate,
 )
 from asf.online.prediction import PredictionRecord
@@ -51,7 +49,6 @@ def _ctx(
     )
     return GateContext(
         prediction=record,
-        candidates=candidates,
         algorithms=ALGOS,
         features=_FEATURES,
         step=0,
@@ -312,7 +309,7 @@ def test_close_call_gate_rejects_bad_arguments() -> None:
 
 def test_gates_are_described_for_result_files() -> None:
     desc = describe(CloseCallGate(rate=0.25, relative=True, random_state=3))
-    assert desc["class"] == "asf.online.gate_criteria.CloseCallGate"
+    assert desc["class"] == "asf.online.gate.CloseCallGate"
     assert desc["params"] == {
         "max_gap": None,
         "n": 1,

@@ -386,17 +386,15 @@ def test_rook_defaults_to_retrain_response_and_retrains_once_per_step() -> None:
 
 
 # ------------------------------------------------------- protocol & params
-def test_protocol_is_checked() -> None:
+def test_protocol_follows_n_warmstart() -> None:
     stream = make_stream()
-    with pytest.raises(ValueError, match="protocol"):
-        run_prequential(_Predicting(), stream, n_warmstart=0, protocol="warm")
-    with pytest.raises(ValueError, match="protocol"):
-        run_prequential(_Predicting(), stream, n_warmstart=5, protocol="cold")
     static = StaticOnlineSelector(PairwiseClassifier(model_class=_Dummy))
     with pytest.raises(ValueError, match="warm start"):
         run_prequential(static, stream)
-    res = run_prequential(_Predicting(), stream, n_warmstart=5, protocol="warm")
-    assert res.meta["protocol"] == "warm"
+    assert run_prequential(_Predicting(), stream, n_warmstart=5).meta["protocol"] == (
+        "warm"
+    )
+    assert run_prequential(_Predicting(), stream).meta["protocol"] == "cold"
 
 
 class _Dummy:  # never fitted: the cold-start check fails before

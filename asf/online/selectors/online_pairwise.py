@@ -18,7 +18,12 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import KFold
 from sklearn.tree import DecisionTreeClassifier
 
-from asf.online.base import AbstractOnlineSelector, DriftResponses, Observation
+from asf.online.base import (
+    AbstractOnlineSelector,
+    DriftResponses,
+    Observation,
+    random_argmax,
+)
 from asf.online.drift.abstract_detector import (
     AbstractDriftDetector,
     AbstractScalarDriftDetector,
@@ -245,7 +250,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
                 chosen = np.concatenate([[primary], extras])
         else:
             votes = self._votes(features)[0]
-            selected = int(self._rng.choice(np.flatnonzero(votes == votes.max())))
+            selected = random_argmax(votes, self._rng)
             candidates = np.array([j for j in range(m) if j != selected])
             if self.variant == "paper":
                 extra = self._rng.choice(
@@ -255,7 +260,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
                     p=self._extra_probabilities(selected, candidates),
                 )
             else:
-                extra = self.alternative_extras(selected, candidates)
+                extra = self._code_extras(selected, candidates)
             chosen = np.concatenate([[selected], extra])
         primary = int(chosen[0])
         return PredictionRecord(
@@ -381,7 +386,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         counts = np.array([perf[self.algorithms[j]].notna().sum() for j in candidates])
         return candidates[np.argsort(counts, kind="stable")[:n]]
 
-    def alternative_extras(self, selected: int, candidates: np.ndarray) -> np.ndarray:
+    def _code_extras(self, selected: int, candidates: np.ndarray) -> np.ndarray:
         """Apply the original's least-observed or ``1 + F1 error`` sampling rule."""
         if self.additional_strategy == "least_observed":
             return self._least_observed(candidates, self.n_additional)

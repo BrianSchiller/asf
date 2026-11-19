@@ -117,7 +117,7 @@ class ExponentialDiscount(Weighting):
         return self.gamma ** (t - 1 - np.asarray(steps, dtype=float))
 
 
-class PullDiscount(Weighting):
+class PullDiscount(ExponentialDiscount):
     """
     Weight ``gamma ** k``, where ``k`` counts the newer observations of the same
     arm in the same cell (discount per pull, as in DTS-OC).
@@ -131,17 +131,7 @@ class PullDiscount(Weighting):
         Discount per pull, in ``(0, 1]``.
     """
 
-    incremental = True
     decay_on_update = True
-
-    def __init__(self, gamma: float) -> None:
-        if not 0 < gamma <= 1:
-            raise ValueError("gamma must be in (0, 1].")
-        self.gamma = float(gamma)
-
-    @property
-    def decay_factor(self) -> float:
-        return self.gamma
 
     def weights(
         self, z: np.ndarray, t: int, steps: np.ndarray, Z: np.ndarray

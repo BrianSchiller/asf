@@ -26,7 +26,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.ensemble._forest import BaseForest
 from sklearn.impute import SimpleImputer
 
-from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.base import AbstractOnlineSelector, Observation, random_argmax
 from asf.online.gate import AbstractExtraRunGate, NeverProbe
 from asf.online.imputation import CensoredImputer, ExpectedImputer
 from asf.online.prediction import PredictionRecord
@@ -506,8 +506,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
             chosen = self.algorithms[int(self.rng_.integers(len(self.algorithms)))]
         else:
             values = np.array([scores[a] for a in self.algorithms])
-            best = np.flatnonzero(values == values.max())
-            chosen = self.algorithms[int(self.rng_.choice(best))]
+            chosen = self.algorithms[random_argmax(values, self.rng_)]
 
         order = {a: i for i, a in enumerate(self.algorithms)}
         ranked = sorted(scores, key=lambda a: (-scores[a], order[a]))

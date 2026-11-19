@@ -124,12 +124,12 @@ instances with the highest ratings:
 | `UnfamiliarityGate` | the detector's per-instance score | a feature detector with `score` (PCA, KS ensemble) |
 | `TimeoutRiskGate` | the predicted runtime of the chosen algorithm | `PredictionRecord.predicted_runtime` (EPM, bandits) |
 
-`UncertaintyGate` is in `asf.online.gate`, the others in
-`asf.online.gate_criteria`. Each takes exactly one of two rules:
+All of them are in `asf.online.gate`. Each takes exactly one of two rules:
 
 ```python
-from asf.online.gate import UncertaintyGate
-from asf.online.gate_criteria import CloseCallGate, TimeoutRiskGate, UnfamiliarityGate
+from asf.online.gate import (
+    CloseCallGate, TimeoutRiskGate, UncertaintyGate, UnfamiliarityGate
+)
 
 UncertaintyGate(threshold=0.25)              # fixed: uncertainty >= 0.25
 UncertaintyGate(rate=0.2, random_state=0)    # the 20% most uncertain recent instances
@@ -193,7 +193,8 @@ With a warm start, the single best on the prefix is reported as
 `sbs_cost_warmstart` / `closed_gap_warmstart`. VBS ties are broken by the
 stream's algorithm order.
 
-Two protocols are supported (`protocol=` is checked against `n_warmstart`):
+Two protocols are supported, chosen by `n_warmstart` (logged as
+`meta["protocol"]`):
 
 * `"warm"` (`n_warmstart >= 1`): the selector is fitted on a fully observed
   prefix. Offline AS methods (`StaticOnlineSelector`) need this protocol.
@@ -446,8 +447,7 @@ the meaning of one bumps it. `load` rejects newer versions.
 |---|---|
 | `asf.online.base` | `AbstractOnlineSelector`, `Observation`, `StepTrace` |
 | `asf.online.prediction` | `PredictionRecord` |
-| `asf.online.gate` | extra-run gates, `ScoreGate` (threshold or rate) |
-| `asf.online.gate_criteria` | criteria for extra runs (close call, unfamiliar instance, timeout risk) |
+| `asf.online.gate` | extra-run gates, `ScoreGate` (threshold or rate) and its criteria |
 | `asf.online.buffer` | sliding window with partially observed performance |
 | `asf.online.imputation` | rules for learning from censored runs (Tornede et al.) |
 | `asf.online.drift` | drift detectors (when to reconfigure) and drift statistics |

@@ -133,20 +133,17 @@ class RewardTransform:
                 "(pass budget=<cutoff> to the selector for the warm start)."
             )
 
-        def penalised(algo: str, value: float) -> float:
-            unsolved = algo in censored or value >= cutoff
-            return self.par_factor * cutoff if unsolved else float(value)
-
+        worst = self.par_factor * cutoff
         out: dict[str, float] = {}
         for algo, value in runtimes.items():
-            p = penalised(algo, value)
+            solved = algo not in censored and value < cutoff
+            par = float(value) if solved else worst
             if kind == "solved":
-                out[algo] = 0.0 if algo in censored or value >= cutoff else 1.0
+                out[algo] = float(solved)
             elif kind == "par":
-                out[algo] = -p / (self.par_factor * cutoff)
+                out[algo] = -par / worst
             elif kind == "unit":
-                worst = math.log10(self.par_factor * cutoff + 1.0)
-                out[algo] = 1.0 - math.log10(p + 1.0) / worst
+                out[algo] = 1.0 - math.log10(par + 1.0) / math.log10(worst + 1.0)
             else:
-                out[algo] = -math.log10(p + 1.0)
+                out[algo] = -math.log10(par + 1.0)
         return out

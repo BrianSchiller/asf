@@ -41,7 +41,7 @@ from typing import Any, Callable, Collection, Hashable, Literal, Mapping, Sequen
 import numpy as np
 import pandas as pd
 
-from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.base import AbstractOnlineSelector, Observation, random_argmax
 from asf.online.gate import AbstractExtraRunGate, NeverProbe
 from asf.online.imputation import CensoredImputer
 from asf.online.prediction import PredictionRecord
@@ -59,14 +59,7 @@ from asf.online.selectors.bandits.rewards import RewardTransform
 from asf.online.selectors.bandits.weighting import Uniform, Weighting
 
 PosteriorFactory = Callable[[int], Posterior]
-Aggregate = Callable[[Sequence[float]], float]
-
-#: Named ways of combining the scores of several traces.
-AGGREGATES: dict[str, Aggregate] = {
-    "min": lambda v: float(min(v)),
-    "max": lambda v: float(max(v)),
-    "mean": lambda v: float(np.mean(v)),
-}
+Aggregate = Literal["mean", "min", "max"]
 
 
 def _mean(posterior: Posterior, x: np.ndarray) -> float:
@@ -134,7 +127,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         ExponentialDiscount(0.99), "hot": LastPulls(30)}``. Every trace has its
         own posterior per arm; the policy scores each and ``aggregate``
         combines the scores. Mutually exclusive with ``weighting``.
-    aggregate : {"mean", "min", "max"} or callable, default="mean"
+    aggregate : {"mean", "min", "max"}, default="mean"
         How the scores of several traces are combined (unused for one trace).
     partitioner : Partitioner or None, default=None
         ``None`` = ``SinglePartition()`` (one model per arm).
@@ -186,7 +179,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         contextual: bool = True,
         weighting: Weighting | None = None,
         traces: Mapping[str, Weighting] | None = None,
-        aggregate: str | Aggregate = "mean",
+        aggregate: Aggregate = "mean",
         partitioner: Partitioner | None = None,
         confidence: ConfidenceModel | None = None,
         reward: RewardTransform | None = None,
@@ -213,8 +206,8 @@ class AbstractContextualBandit(AbstractOnlineSelector):
             traces = {"main": weighting if weighting is not None else Uniform()}
         if not traces:
             raise ValueError("traces must not be empty.")
-        if isinstance(aggregate, str) and aggregate not in AGGREGATES:
-            raise ValueError(f"aggregate must be one of {list(AGGREGATES)}.")
+        if aggregate not in ("mean", "min", "max"):
+            raise ValueError("aggregate must be 'mean', 'min' or 'max'.")
         self.traces = dict(traces)
         self.aggregate = aggregate
         self.partitioner = partitioner if partitioner is not None else SinglePartition()
@@ -298,8 +291,7 @@ class AbstractContextualBandit(AbstractOnlineSelector):
                 [self._combine([_mean(q, x) for q in p]) for p in posteriors]
             )
         self.last_scores_ = dict(zip(self.algorithms, scores.tolist()))
-        best = np.flatnonzero(scores == scores.max())
-        chosen = int(self.rng_.choice(best))
+        chosen = random_argmax(scores, self.rng_)
         others = [int(i) for i in ranking if i != chosen]
         uncertainty = None
         if others and not isinstance(self.gate_, NeverProbe):
@@ -503,18 +495,13 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         """Combine one value per trace with ``aggregate``."""
         if len(values) == 1:
             return values[0]
-        combine = (
-            AGGREGATES[self.aggregate]
-            if isinstance(self.aggregate, str)
-            else self.aggregate
-        )
-        return combine(values)
+        return float(getattr(np, self.aggregate)(values))
 
     def _combine_draws(self, draws: Sequence[np.ndarray]) -> np.ndarray:
         """:meth:`_combine` per draw (``draws``: one array per trace)."""
         if len(draws) == 1:
             return draws[0]
-        return np.array([self._combine(v) for v in zip(*draws)])
+        return getattr(np, self.aggregate)(np.stack(draws), axis=0)
 
     def _posterior_for(
         self, arm: str, z: np.ndarray, cell: Hashable, trace: str | None = None

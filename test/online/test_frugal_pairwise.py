@@ -45,10 +45,11 @@ def _one(value: float = 0.0, name: str = "x") -> pd.DataFrame:
 
 
 def _context(uncertainty: float | None, candidates: tuple[str, ...]) -> GateContext:
-    record = PredictionRecord(chosen="a", uncertainty=uncertainty)
+    record = PredictionRecord(
+        chosen="a", uncertainty=uncertainty, candidates=candidates
+    )
     return GateContext(
         prediction=record,
-        candidates=candidates,
         algorithms=("a", "b", "c"),
         features=_one(),
         step=0,
@@ -288,10 +289,7 @@ def test_retrain_refits_everything() -> None:
 # ---------------------------------------------------------------- end to end
 def _run(seed: int, n_warmstart: int, **kwargs: object) -> pd.DataFrame:
     sel = _selector(random_state=seed, **kwargs)
-    protocol = "warm" if n_warmstart else "cold"
-    result = run_prequential(
-        sel, make_stream(), n_warmstart=n_warmstart, protocol=protocol
-    )
+    result = run_prequential(sel, make_stream(), n_warmstart=n_warmstart)
     return result.steps.drop(columns=["selector_seconds", "detector_seconds"])
 
 

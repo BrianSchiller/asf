@@ -15,12 +15,18 @@ nominees; bandits: none).
 instance with one number ("how much reason is there for an extra run?") and
 the base class turns it into a decision, either with a fixed ``threshold``
 or with a ``rate`` ("run extras on the q% highest-rated recent instances").
-:class:`UncertaintyGate` rates by the selector's uncertainty; further
-criteria are in :mod:`asf.online.gate_criteria`.
+Sweeping the rate from 0 to 1 gives every criterion a cost-versus-quality
+curve. Criteria:
+
+* :class:`UncertaintyGate` -- the selector's uncertainty.
+* :class:`CloseCallGate` -- how close the two best algorithms are.
+* :class:`UnfamiliarityGate` -- the detector's per-instance score.
+* :class:`TimeoutRiskGate` -- the predicted runtime of the chosen algorithm.
 """
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
@@ -45,9 +51,6 @@ class GateContext:
     ----------
     prediction : PredictionRecord
         The selector's decision for this instance (``extras`` still empty).
-    candidates : tuple[str, ...]
-        Algorithms the gate may choose from, most useful first (the
-        selector's nominees, ``prediction.candidates``).
     algorithms : tuple[str, ...]
         All algorithms of the portfolio.
     features : pd.DataFrame
@@ -65,13 +68,17 @@ class GateContext:
     """
 
     prediction: PredictionRecord
-    candidates: tuple[str, ...]
     algorithms: tuple[str, ...]
     features: pd.DataFrame
     step: int
     instance_score: float | None = None
     last_signal: DriftSignal | None = None
     steps_since_drift: int | None = None
+
+    @property
+    def candidates(self) -> tuple[str, ...]:
+        """The selector's nominees for extra runs, most useful first."""
+        return self.prediction.candidates
 
     def ranked_alternatives(self) -> tuple[str, ...]:
         """
@@ -340,3 +347,112 @@ class UncertaintyGate(ScoreGate):
 
     def _score(self, context: GateContext) -> float | None:
         return context.prediction.uncertainty
+
+
+class CloseCallGate(ScoreGate):
+    """
+    Run extras when the two best algorithms are nearly tied.
+
+    The gap is the difference between the highest and the second-highest
+    entry of ``prediction.scores`` (votes for pairwise selectors, predicted
+    performance for runtime models, the policy index for bandits); the
+    smaller the gap, the more reason for an extra run. Non-finite scores are
+    ignored; with fewer than two scores the instance is not rated.
+
+    Parameters
+    ----------
+    max_gap : float or None, default=None
+        Fire if the gap is at most ``max_gap`` (fixed rule). Exactly one of
+        ``max_gap`` and ``rate`` must be given.
+    n : int or None, default=1
+        See :class:`ScoreGate`.
+    relative : bool, default=False
+        Divide the gap by the larger absolute value of the two scores, e.g.
+        to compare predicted runtimes across easy and hard instances.
+    rate, window_size, random_state
+        See :class:`ScoreGate`.
+    """
+
+    def __init__(
+        self,
+        max_gap: float | None = None,
+        n: int | None = 1,
+        *,
+        relative: bool = False,
+        rate: float | None = None,
+        window_size: int = 200,
+        random_state: int | None = None,
+    ) -> None:
+        if max_gap is not None and max_gap < 0:
+            raise ValueError("max_gap must be >= 0.")
+        super().__init__(
+            threshold=None if max_gap is None else -float(max_gap),
+            n=n,
+            rate=rate,
+            window_size=window_size,
+            random_state=random_state,
+        )
+        self.max_gap = None if max_gap is None else float(max_gap)
+        self.relative = bool(relative)
+
+    def _score(self, context: GateContext) -> float | None:
+        scores = context.prediction.scores
+        if scores is None:
+            return None
+        values = sorted(
+            (float(v) for v in scores.values() if math.isfinite(v)), reverse=True
+        )
+        if len(values) < 2:
+            return None
+        gap = values[0] - values[1]
+        if self.relative and gap > 0:
+            gap /= max(abs(values[0]), abs(values[1]))
+        return -gap
+
+
+class UnfamiliarityGate(ScoreGate):
+    """
+    Run extras on instances the drift detector finds unfamiliar.
+
+    The score is the per-instance score of the selector's feature detector
+    (``AbstractDriftDetector.score``, higher = further from the reference
+    data), so the selector needs such a detector. Until the detector is
+    fitted, and for selectors without one, instances are not rated.
+
+    Parameters
+    ----------
+    threshold : float or None, default=None
+        Minimum detector score for extra runs (on the detector's scale).
+    n, rate, window_size, random_state
+        See :class:`ScoreGate`.
+    """
+
+    needs_instance_score = True
+
+    def _score(self, context: GateContext) -> float | None:
+        return context.instance_score
+
+
+class TimeoutRiskGate(ScoreGate):
+    """
+    Run extras when the chosen algorithm is predicted to be slow.
+
+    The score is ``prediction.predicted_runtime``: the closer it is to the
+    cutoff, the more likely the primary run times out and a second algorithm
+    pays off. Selectors without a runtime prediction are not rated. Meant
+    for runtime minimisation.
+
+    Parameters
+    ----------
+    threshold : float or None, default=None
+        Minimum predicted runtime for extra runs, on the stream's raw scale
+        (e.g. ``0.8 * cutoff``). A rate needs no cutoff.
+    n, rate, window_size, random_state
+        See :class:`ScoreGate`.
+    """
+
+    def _score(self, context: GateContext) -> float | None:
+        runtime = context.prediction.predicted_runtime
+        if runtime is None or not math.isfinite(runtime):
+            return None
+        return float(runtime)

@@ -26,29 +26,26 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold
+from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from asf.online.drift.abstract_detector import AbstractDriftDetector, DriftSignal
 
 
-class _Projection:
-    """Median imputer -> standard scaler -> PCA, with per-row reconstruction error."""
+def _projection(n_components: int | float | str, random_state: int | None) -> Pipeline:
+    """Median imputer -> standard scaler -> PCA."""
+    return make_pipeline(
+        SimpleImputer(strategy="median", keep_empty_features=True),
+        StandardScaler(),
+        PCA(n_components=n_components, random_state=random_state),
+    )
 
-    def __init__(
-        self, n_components: int | float | str, random_state: int | None
-    ) -> None:
-        self.imputer = SimpleImputer(strategy="median", keep_empty_features=True)
-        self.scaler = StandardScaler()
-        self.pca = PCA(n_components=n_components, random_state=random_state)
 
-    def fit(self, X: np.ndarray) -> "_Projection":
-        self.pca.fit(self.scaler.fit_transform(self.imputer.fit_transform(X)))
-        return self
-
-    def errors(self, X: np.ndarray) -> np.ndarray:
-        Z = self.scaler.transform(self.imputer.transform(X))
-        recon = self.pca.inverse_transform(self.pca.transform(Z))
-        return np.linalg.norm(Z - recon, axis=1)
+def _reconstruction_errors(projection: Pipeline, X: np.ndarray) -> np.ndarray:
+    """Euclidean distance of each standardised row to its PCA reconstruction."""
+    Z = projection[:-1].transform(X)
+    pca = projection[-1]
+    return np.linalg.norm(Z - pca.inverse_transform(pca.transform(Z)), axis=1)
 
 
 class PCAReconstructionDetector(AbstractDriftDetector):
@@ -136,8 +133,8 @@ class PCAReconstructionDetector(AbstractDriftDetector):
         self.n_bootstrap = int(n_bootstrap)
         self.random_state = random_state
 
-        self._projection: _Projection | None = None
-        self._feature_names: list[str] = []
+        self._projection: Pipeline | None = None
+        self.feature_names_: list[str] = []
         self._window: deque[float] = deque(maxlen=self.chunk_size)
         self._since_check = 0
         self.lower_threshold_ = float("nan")
@@ -151,17 +148,14 @@ class PCAReconstructionDetector(AbstractDriftDetector):
         self, features: pd.DataFrame, performance: pd.DataFrame | None = None
     ) -> "PCAReconstructionDetector":
         """Fit PCA and alert thresholds on reference data; clears the chunk state."""
-        if len(features) < 2:
-            raise ValueError("At least two reference instances are required.")
-        self._feature_names = [str(c) for c in features.columns]
-        X = features.to_numpy(float)
-        self._projection = _Projection(self.n_components, self.random_state).fit(X)
-        self.n_components_ = int(self._projection.pca.n_components_)
+        X = self._reference_matrix(features)
+        self._projection = _projection(self.n_components, self.random_state).fit(X)
+        self.n_components_ = int(self._projection[-1].n_components_)
 
         if self.reference_errors == "cross_validated" and len(X) >= 2 * self.n_folds:
             errors = self._out_of_fold_errors(X)
         else:
-            errors = self._projection.errors(X)
+            errors = _reconstruction_errors(self._projection, X)
         self._set_thresholds(errors)
 
         self._window.clear()
@@ -173,8 +167,8 @@ class PCAReconstructionDetector(AbstractDriftDetector):
         errors = np.empty(len(X))
         splitter = KFold(self.n_folds, shuffle=True, random_state=self.random_state)
         for train, test in splitter.split(X):
-            proj = _Projection(self.n_components, self.random_state).fit(X[train])
-            errors[test] = proj.errors(X[test])
+            proj = _projection(self.n_components, self.random_state).fit(X[train])
+            errors[test] = _reconstruction_errors(proj, X[test])
         return errors
 
     def _set_thresholds(self, errors: np.ndarray) -> None:
@@ -196,22 +190,13 @@ class PCAReconstructionDetector(AbstractDriftDetector):
         Accepts one or several rows; if several rows complete several checks,
         the signal reports drift if any of them did.
         """
-        errors = self.score(features)
-        drift = False
-        for e in errors:
-            self._window.append(float(e))
-            self._since_check += 1
-            if (
-                len(self._window) == self.chunk_size
-                and self._since_check >= self.stride
-            ):
-                self._since_check = 0
-                chunk_error = float(np.mean(self._window))
-                self.last_chunk_error_ = chunk_error
-                drift |= self._outside_band(chunk_error)
+        errors = self.score(features).tolist()
+        drift = self._strided_checks(errors, self._window, self._check)
         return DriftSignal(drift=drift, score=self.last_chunk_error_)
 
-    def _outside_band(self, chunk_error: float) -> bool:
+    def _check(self) -> bool:
+        """Is the mean error of the window outside the alert band?"""
+        self.last_chunk_error_ = chunk_error = float(np.mean(self._window))
         if chunk_error > self.upper_threshold_:
             return True
         return self.two_sided and chunk_error < self.lower_threshold_
@@ -222,12 +207,6 @@ class PCAReconstructionDetector(AbstractDriftDetector):
         Per-instance reconstruction error (Euclidean distance in standardised
         space). Higher means less familiar; it is not compared with a threshold.
         """
-        if self._projection is None:
-            raise RuntimeError("Call fit() before update()/score().")
-        missing = [
-            c for c in self._feature_names if c not in map(str, features.columns)
-        ]
-        if missing:
-            raise ValueError(f"Missing feature columns: {missing[:5]}")
-        X = features.rename(columns=str)[self._feature_names].to_numpy(float)
-        return self._projection.errors(X)
+        X = self._matrix(features)
+        assert self._projection is not None
+        return _reconstruction_errors(self._projection, X)
