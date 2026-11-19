@@ -127,9 +127,7 @@ class AbstractOnlineSelector(AbstractSelector):
     * ``_fit_initial``: build the initial model from the warm-start data.
     * ``_select``: return a :class:`~asf.online.prediction.PredictionRecord`
       for ONE instance (chosen algorithm, budget, predictions, nominees for
-      extra runs). Older subclasses may implement ``_propose`` instead and
-      return a schedule; its first entry becomes the choice and the rest the
-      nominees.
+      extra runs).
     * ``_observe``: learn from feedback (update statistics, ...).
 
     and, optionally, the capability hooks used by drift responses:
@@ -405,7 +403,7 @@ class AbstractOnlineSelector(AbstractSelector):
             if signal is not None:
                 self.last_signal_ = signal
                 if signal.drift:
-                    self._record_drift()
+                    self.drift_steps.append(self.step_)
                     self.last_drift_step_ = self.step_
                     self.on_drift(signal)
             policy = self.retrain_policy
@@ -439,9 +437,10 @@ class AbstractOnlineSelector(AbstractSelector):
 
     def retrain(self) -> None:
         """Retrain now (timed and recorded); the detector is re-referenced."""
-        with self._timed() as timer:
+        with _Timer() as timer:
             self._retrain()
-        self._record_retrain(timer.seconds)
+        self.retrain_steps.append(self.step_)
+        self.retrain_seconds += timer.seconds
         self._retrained_this_step = True
         self._rereference_pending = True
 
@@ -455,13 +454,13 @@ class AbstractOnlineSelector(AbstractSelector):
         if self.detector is None or self.buffer is None:
             return
         if isinstance(self.detector, AbstractScalarDriftDetector):
-            with self._timed() as timer:
+            with _Timer() as timer:
                 self.detector.reset()
         else:
             if len(self.buffer) == 0:
                 return
             X, P = self.buffer.features(), self.buffer.performance()
-            with self._timed() as timer:
+            with _Timer() as timer:
                 self.detector.fit(X, P)
         self._add_detector_seconds(timer.seconds)
         self.detector_ready_ = True
@@ -471,11 +470,11 @@ class AbstractOnlineSelector(AbstractSelector):
         if self.detector is None or self.buffer is None or not self.detector_ready_:
             return
         if isinstance(self.detector, AbstractScalarDriftDetector):
-            with self._timed() as timer:
+            with _Timer() as timer:
                 self.detector.reset()
         else:
             X, P = self.buffer.features(), self.buffer.performance()
-            with self._timed() as timer:
+            with _Timer() as timer:
                 self.detector.reset(X, P)
         self._add_detector_seconds(timer.seconds)
         self._rereference_pending = False
@@ -519,29 +518,9 @@ class AbstractOnlineSelector(AbstractSelector):
     ) -> None:
         """Build the initial model from the (fully observed) warm-start data."""
 
+    @abstractmethod
     def _select(self, features: pd.DataFrame) -> PredictionRecord:
-        """
-        Decide for one instance (single-row frame).
-
-        The default wraps the older ``_propose`` hook: the first schedule
-        entry is the choice, the remaining entries are the nominees.
-        """
-        schedule = self._propose(features)
-        if not schedule:
-            raise RuntimeError("_propose() must return a non-empty schedule.")
-        self._check_known([str(a) for a, _ in schedule])
-        algo, budget = schedule[0]
-        return PredictionRecord(
-            chosen=str(algo),
-            budget=float(budget or 0.0),
-            candidates=tuple(str(a) for a, _ in schedule[1:]),
-        )
-
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-        """Older hook: return the schedule for one instance. Prefer ``_select``."""
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement _select (or _propose)."
-        )
+        """Decide for one instance (single-row frame)."""
 
     @abstractmethod
     def _observe(self, observation: Observation) -> None:
@@ -574,19 +553,6 @@ class AbstractOnlineSelector(AbstractSelector):
         raise NotImplementedError
 
     # ---------------------------------------------------------- helpers
-    def _record_retrain(self, seconds: float) -> None:
-        """Log a retraining at the current (0-based) step that took ``seconds``."""
-        self.retrain_steps.append(self.step_)
-        self.retrain_seconds += float(seconds)
-
-    def _record_drift(self) -> None:
-        """Log that a drift was signalled at the current step."""
-        self.drift_steps.append(self.step_)
-
-    def _timed(self) -> "_Timer":
-        """Context manager measuring wall-clock seconds, e.g. for retrain timing."""
-        return _Timer()
-
     def _maybe_fit_detector(self) -> None:
         if not isinstance(self.detector, AbstractDriftDetector):
             if self.detector is not None and not self.detector_ready_:
@@ -603,7 +569,7 @@ class AbstractOnlineSelector(AbstractSelector):
     def _detect(self, obs: Observation, trace: StepTrace) -> DriftSignal | None:
         if self.detector is None or not self.detector_ready_:
             return None
-        with self._timed() as timer:
+        with _Timer() as timer:
             if isinstance(self.detector, AbstractScalarDriftDetector):
                 assert self.drift_statistic is not None
                 sample = self.drift_statistic(obs, trace.prediction)
@@ -622,7 +588,7 @@ class AbstractOnlineSelector(AbstractSelector):
             self.detector_ready_
         ):
             return None
-        with self._timed() as timer:
+        with _Timer() as timer:
             score = float(self.detector.score(features)[0])
         self._add_detector_seconds(timer.seconds)
         return score

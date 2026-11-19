@@ -364,7 +364,7 @@ def test_epm_cutoff_and_drop_targets() -> None:
 
     sel = _fitted_epm(imputation=DropCensored())
     out = sel._training_targets(TARGET_PERF, TARGET_CENS)
-    expected = np.array([[5.0, 100.0], [np.nan, np.nan], [np.nan, 7.0], [np.nan, 8.0]])
+    expected = np.array([[5.0, np.nan], [np.nan, np.nan], [np.nan, 7.0], [np.nan, 8.0]])
     np.testing.assert_array_equal(out, expected)
 
 

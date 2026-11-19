@@ -152,7 +152,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
       (:func:`jackknife_after_bootstrap_sd`). With one training instance the
       standard error is 0.
     * Assumption (timeouts): a run is unsolved if it was censored or its
-      runtime exceeds the cutoff (as in the evaluator's PAR-k); its target is
+      runtime reaches the cutoff (as in the evaluator's PAR-k); its target is
       ``par_factor * cutoff``, unless ``imputation`` is set. The cutoff is
       that of the last observation, before the first one ``budget``.
     * Censored imputation (Tornede et al., 2022; not in Degroote et al.):
@@ -346,7 +346,7 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         """
         Training targets per instance and algorithm (``NaN`` = not run).
 
-        Unsolved runs (censored, or runtime above the cutoff) get
+        Unsolved runs (censored, or runtime at or above the cutoff) get
         ``par_factor * cutoff`` without ``imputation``. With it they get the
         rule's value at their bound (the budget, at most the cutoff): the
         bound for :class:`~asf.online.imputation.CutoffImputer` and as the
@@ -371,11 +371,11 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         return values
 
     def _unsolved(self, values: np.ndarray, censored: pd.DataFrame) -> np.ndarray:
-        """Observed runs that were censored or exceed the cutoff."""
+        """Observed runs that were censored or reached the cutoff."""
         if not math.isfinite(self.cutoff_):
             return np.zeros(values.shape, dtype=bool)
         with np.errstate(invalid="ignore"):
-            unsolved = censored.to_numpy(dtype=bool) | (values > self.cutoff_)
+            unsolved = censored.to_numpy(dtype=bool) | (values >= self.cutoff_)
         return unsolved & ~np.isnan(values)
 
     def _training_data(self) -> tuple[np.ndarray, np.ndarray, int]:

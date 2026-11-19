@@ -378,7 +378,7 @@ def run_prequential(
                 continue
             limit = cutoff if not budget or budget <= 0 else min(budget, cutoff)
             true_rt = float(truth[algo])
-            if true_rt <= limit:
+            if true_rt < limit:  # runtime == limit counts as a timeout
                 runs[algo] = true_rt
             else:
                 runs[algo] = limit

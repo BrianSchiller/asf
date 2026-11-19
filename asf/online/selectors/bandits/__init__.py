@@ -30,8 +30,6 @@ Planned extensions: flow-based ``ConfidenceModel`` and Normal-Inverse-Gamma
 
 from asf.online.selectors.bandits.base import AbstractContextualBandit
 from asf.online.selectors.bandits.confidence import ConfidenceModel, GaussianConfidence
-from asf.online.selectors.bandits.context import ContextBuilder, model_input
-from asf.online.selectors.bandits.history import ArmData, BanditHistory
 from asf.online.selectors.bandits.partitioning import (
     OnlineKMeans,
     Partitioner,
@@ -109,8 +107,4 @@ __all__ = [
     "SinglePartition",
     "OnlineKMeans",
     "RewardTransform",
-    "ContextBuilder",
-    "model_input",
-    "BanditHistory",
-    "ArmData",
 ]

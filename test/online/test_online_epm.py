@@ -210,8 +210,8 @@ def test_par_targets(fitted: OnlineEPMSelector) -> None:
         [[False, False], [False, False], [True, False]], columns=["a", "b"]
     )
     out = fitted._training_targets(perf, cens)
-    expected = np.array([[5.0, 100.0], [1000.0, np.nan], [1000.0, 7.0]])
-    np.testing.assert_array_equal(out, expected)  # == cutoff counts as solved
+    expected = np.array([[5.0, 1000.0], [1000.0, np.nan], [1000.0, 7.0]])
+    np.testing.assert_array_equal(out, expected)  # == cutoff counts as unsolved
 
     fitted.target_transform = "log10"
     np.testing.assert_allclose(fitted._training_targets(perf, cens), np.log10(expected))

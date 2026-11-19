@@ -1,11 +1,6 @@
-from asf.online.drift import DriftSignal
-from asf.online.retraining import DriftTriggeredRetrain, PeriodicRetrain
+from asf.online.retraining import PeriodicRetrain
 
 
-def test_periodic_and_drift_triggered_policies() -> None:
+def test_periodic_policy() -> None:
     p = PeriodicRetrain(every=3)
     assert [p.should_retrain(s) for s in range(1, 7)] == [False, False, True] * 2
-    p = DriftTriggeredRetrain()
-    assert not p.should_retrain(5)
-    assert not p.should_retrain(5, DriftSignal(drift=False))
-    assert p.should_retrain(5, DriftSignal(drift=True))

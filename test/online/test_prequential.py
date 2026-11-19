@@ -10,6 +10,7 @@ from typing import Any
 
 from asf.online.base import AbstractOnlineSelector, Observation
 from asf.online.evaluation import run_prequential
+from asf.online.prediction import PredictionRecord
 from asf.online.selectors import StaticOnlineSelector
 from asf.selectors import PairwiseClassifier
 
@@ -26,15 +27,16 @@ class _Scripted(AbstractOnlineSelector):
     ) -> None:
         pass
 
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-        return [("a", 0.0), ("b", 0.0)]
+    def _select(self, features: pd.DataFrame) -> PredictionRecord:
+        return PredictionRecord("a", candidates=("b",))
 
     def _observe(self, observation: Observation) -> None:
         self.seen.append(observation)
         if self.step_ == 4:
-            with self._timed() as t:
-                pass
-            self._record_retrain(t.seconds)
+            self.retrain()
+
+    def _retrain(self) -> None:
+        pass
 
 
 def test_cost_accounting_and_feedback(stream: InstanceStream) -> None:
@@ -73,8 +75,8 @@ def test_cold_start_and_infinite_cutoff() -> None:
 
 def test_censoring_and_budget(stream: InstanceStream) -> None:
     class _Short(_Scripted):
-        def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-            return [("a", 10.0)]  # budget below the 50s of the slow case
+        def _select(self, features: pd.DataFrame) -> PredictionRecord:
+            return PredictionRecord("a", budget=10.0)  # below the 50s slow case
 
     sel = _Short(window_size=50)
     res = run_prequential(sel, stream, n_warmstart=40, par_factor=10)
@@ -153,8 +155,8 @@ def test_maximize_quality_rejects_runtime_constraints() -> None:
         )
 
     class _Budgeted(_Scripted):
-        def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-            return [("a", 5.0)]
+        def _select(self, features: pd.DataFrame) -> PredictionRecord:
+            return PredictionRecord("a", budget=5.0)
 
     with pytest.raises(ValueError, match="unlimited run budgets"):
         run_prequential(

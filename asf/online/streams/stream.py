@@ -31,7 +31,7 @@ class InstanceStream:
         Instance features in arrival order (index = instance ids).
     performance : pd.DataFrame
         Raw runtimes, same index and order as ``features`` (timeouts NOT yet
-        penalised; values above ``cutoff`` count as unsolved).
+        penalised; values at or above ``cutoff`` count as unsolved).
     cutoff : float
         Scenario cutoff time.
     drift_points : tuple[int, ...], default=()

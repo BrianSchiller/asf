@@ -294,25 +294,6 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         """Retrain every pair classifier on the full buffer."""
         self._train()
 
-    def _predict(
-        self,
-        features: pd.DataFrame | None,
-        performance: pd.DataFrame | None = None,
-    ) -> dict[str, list[tuple[str, float]]]:
-        """Batch prediction: the majority-vote winner only, no exploration."""
-        if features is None:
-            raise ValueError("OnlinePairwiseSelector requires features.")
-        votes = self._votes(features)
-        budget = float(self.budget or 0)
-        predictions = {}
-        for idx, row_votes in zip(features.index, votes):
-            # Ties are broken at random in both variants, consistent with
-            # ``_propose`` and the original ``PartialOVOclassifier.predict``.
-            winners = np.flatnonzero(row_votes == row_votes.max())
-            winner = int(self._rng.choice(winners))
-            predictions[str(idx)] = [(self.algorithms[winner], budget)]
-        return predictions
-
     # ------------------------------------------------------------- internals
     def _reset_models(self) -> None:
         m = len(self.algorithms)

@@ -507,7 +507,7 @@ selector = OnlineEPMSelector(
   mlr: jackknife-after-bootstrap with bias correction), `"tree_std"` (spread
   across trees) or `None` (faster; not with UCB). It fills the prediction
   record's `uncertainty`, which gates can use.
-* **Targets**: unsolved runs (censored, or above the cutoff) count as
+* **Targets**: unsolved runs (censored, or at or above the cutoff) count as
   `par_factor * cutoff`. `target_transform="log10"` trains on log runtimes
   instead of the raw scale. `predicted_runtime` is the predicted PAR10 value
   of the chosen algorithm.

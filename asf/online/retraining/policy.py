@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from asf.online.drift.abstract_detector import AbstractDriftDetector, DriftSignal
+from asf.online.drift.abstract_detector import DriftSignal
 
 
 class AbstractRetrainPolicy(ABC):
@@ -36,12 +36,3 @@ class PeriodicRetrain(AbstractRetrainPolicy):
     def should_retrain(self, step: int, signal: DriftSignal | None = None) -> bool:
         return step % self.every == 0
 
-
-class DriftTriggeredRetrain(AbstractRetrainPolicy):
-    """Retrain only when the attached detector signals drift."""
-
-    def __init__(self, detector: AbstractDriftDetector | None = None) -> None:
-        self.detector = detector
-
-    def should_retrain(self, step: int, signal: DriftSignal | None = None) -> bool:
-        return bool(signal is not None and signal.drift)

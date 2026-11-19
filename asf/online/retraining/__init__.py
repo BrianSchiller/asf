@@ -1,6 +1,5 @@
 from asf.online.retraining.policy import (
     AbstractRetrainPolicy,
-    DriftTriggeredRetrain,
     PeriodicRetrain,
 )
 from asf.online.retraining.response import (
@@ -14,7 +13,6 @@ from asf.online.retraining.response import (
 
 __all__ = [
     "AbstractRetrainPolicy",
-    "DriftTriggeredRetrain",
     "PeriodicRetrain",
     "AbstractDriftResponse",
     "RetrainResponse",

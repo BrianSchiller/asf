@@ -8,8 +8,8 @@ import numpy as np
 
 
 def penalised_runtime(runtime: float, cutoff: float, par_factor: float = 10.0) -> float:
-    """PAR-k score of a single run: runtime if solved, else ``cutoff * par_factor``."""
-    return float(runtime) if runtime <= cutoff else float(cutoff * par_factor)
+    """PAR-k score of one run: the runtime if below ``cutoff``, else ``cutoff * par_factor``."""
+    return float(runtime) if runtime < cutoff else float(cutoff * par_factor)
 
 
 def closed_gap(

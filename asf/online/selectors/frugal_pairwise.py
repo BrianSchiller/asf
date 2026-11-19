@@ -267,24 +267,6 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         self._n_usable = 0
         self._fit_all()
 
-    def _predict(
-        self,
-        features: pd.DataFrame | None,
-        performance: pd.DataFrame | None = None,
-    ) -> dict[str, list[tuple[str, float]]]:
-        """Batch prediction: the vote winner per row, no extra runs."""
-        if features is None:
-            raise ValueError("FrugalPairwiseSelector requires features.")
-        x = features.to_numpy(dtype=float)
-        probs, timeouts = self._pair_probabilities(x), self._predicted_timeouts(x)
-        budget = float(self.budget or 0)
-        out = {}
-        for idx, p, t in zip(features.index, probs, timeouts):
-            votes = self._votes(p, t)
-            winner = int(self._rng.choice(np.flatnonzero(votes == votes.max())))
-            out[str(idx)] = [(self.algorithms[winner], budget)]
-        return out
-
     def _default_gate(self) -> AbstractExtraRunGate:
         return UncertaintyGate(threshold=0.25, n=1)
 
