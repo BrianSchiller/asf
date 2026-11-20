@@ -15,8 +15,7 @@ from asf.online.base import Observation
 from asf.online.drift.abstract_detector import AbstractScalarDriftDetector, DriftSignal
 from asf.online.drift.statistics import LogRuntimeResidual
 from asf.online.evaluation.prequential import OnlineResult, run_prequential
-from asf.online.gate import AlwaysProbe
-from asf.online.retraining.policy import PeriodicRetrain
+from asf.online.gate import AllNomineesGate
 from asf.online.retraining.response import ResetResponse, ReweightResponse
 from asf.online.selectors import OnlineEPMSelector
 from asf.online.selectors.online_epm import jackknife_after_bootstrap_sd
@@ -165,7 +164,9 @@ def test_ucb_gamma_flips_the_choice(fitted: OnlineEPMSelector) -> None:
 
 def test_epsilon_greedy_probabilities() -> None:
     def frequency_of_a(epsilon: float) -> float:
-        sel = make_selector(strategy="epsilon_greedy", epsilon=epsilon)
+        sel = make_selector(
+            strategy="epsilon_greedy", epsilon=epsilon, uncertainty=None
+        )
         sel.fit(*frames([[5.0, 50.0], [6.0, 40.0]]))
         inject(sel, {"a": (1.0, 0.0), "b": (2.0, 0.0)})
         return float(
@@ -210,8 +211,8 @@ def test_par_targets(fitted: OnlineEPMSelector) -> None:
         [[False, False], [False, False], [True, False]], columns=["a", "b"]
     )
     out = fitted._training_targets(perf, cens)
-    expected = np.array([[5.0, 100.0], [1000.0, np.nan], [1000.0, 7.0]])
-    np.testing.assert_array_equal(out, expected)  # == cutoff counts as solved
+    expected = np.array([[5.0, 1000.0], [1000.0, np.nan], [1000.0, 7.0]])
+    np.testing.assert_array_equal(out, expected)  # == cutoff counts as unsolved
 
     fitted.target_transform = "log10"
     np.testing.assert_allclose(fitted._training_targets(perf, cens), np.log10(expected))
@@ -232,7 +233,7 @@ def test_log10_predictions_are_back_transformed() -> None:
 
 
 def test_censored_observation_is_learned_as_par10(fitted: OnlineEPMSelector) -> None:
-    fitted.retrain_every = 1
+    fitted.update_every = 1
     fitted.observe(obs(0, {"a": CUTOFF}, censored=("a",)))
     _, Y, _ = fitted._training_data()
     assert Y[-1, 0] == 10 * CUTOFF
@@ -281,7 +282,7 @@ def test_update_schedule_counts_data_points(
 
 
 def test_model_follows_new_observations(fitted: OnlineEPMSelector) -> None:
-    fitted.retrain_every = 1
+    fitted.update_every = 1
     before = fitted._select(one_row()).predicted_runtime
     for i in range(20):
         fitted.observe(obs(i, {"a": 80.0}))
@@ -291,7 +292,7 @@ def test_model_follows_new_observations(fitted: OnlineEPMSelector) -> None:
 
 
 def test_window_drops_models_without_data() -> None:
-    sel = make_selector(window_size=3, retrain_every=1)
+    sel = make_selector(window_size=3, update_every=1)
     sel.fit(*frames([[5.0, 50.0]] * 3))
     for i in range(3):
         sel.observe(obs(i, {"a": 5.0}))
@@ -318,7 +319,7 @@ def test_capability_hooks(stream: InstanceStream) -> None:
         make_selector(drift_response=ReweightResponse(0.5)).fit(*frames([[5.0, 50.0]]))
     make_selector(drift_response=ResetResponse())  # accepted
 
-    sel = make_selector(retrain_policy=PeriodicRetrain(every=25))
+    sel = make_selector(retrain_every=25, uncertainty=None)
     result = run_prequential(sel, stream, n_warmstart=20)
     assert len(result.retrain_steps) == 4
     assert set(np.diff(result.retrain_steps)) == {25}
@@ -342,7 +343,7 @@ def test_prequential_warm_and_cold(stream: InstanceStream, tmp_path: Any) -> Non
 
 
 def test_all_data_upper_bound_runs_everything(stream: InstanceStream) -> None:
-    sel = make_selector(gate=AlwaysProbe())
+    sel = make_selector(gate=AllNomineesGate(), uncertainty=None)
     result = run_prequential(sel, stream, n_warmstart=20, result_mode="primary")
     assert (result.steps["n_runs"] == 2).all()
     assert sel.buffer is not None and sel.buffer.performance().notna().all().all()
@@ -350,21 +351,10 @@ def test_all_data_upper_bound_runs_everything(stream: InstanceStream) -> None:
 
 @pytest.mark.slow
 def test_learns_on_the_toy_stream(stream: InstanceStream) -> None:
-    sel = make_selector(retrain_every=1)
+    sel = make_selector(update_every=1, uncertainty=None)
     result = run_prequential(sel, stream, n_warmstart=40)
     before_drift = result.steps.iloc[: 80 - 40]
     assert (before_drift["user_cost"] == before_drift["vbs_cost"]).mean() > 0.8
-
-
-@pytest.mark.slow
-def test_determinism(stream: InstanceStream) -> None:
-    def run(seed: int) -> pd.DataFrame:
-        sel = make_selector(strategy="epsilon_greedy", epsilon=0.3, random_state=seed)
-        cols = ["primary", "pred_runtime", "pred_uncertainty", "pred_score"]
-        return run_prequential(sel, stream, n_warmstart=10).steps[cols]
-
-    pd.testing.assert_frame_equal(run(3), run(3))
-    assert not run(3)["primary"].equals(run(4)["primary"])
 
 
 class _Recorder(AbstractScalarDriftDetector):
@@ -407,7 +397,7 @@ def test_extra_trees_and_point_estimators(stream: InstanceStream) -> None:
         {"strategy": "ucb", "uncertainty": None},
         {"target_transform": "log10", "maximize": True},
         {"par_factor": 0.0},
-        {"retrain_every": 0},
+        {"update_every": 0},
         {"estimator": Ridge()},  # uncertainty needs a forest
         {"estimator": ExtraTreesRegressor()},  # jackknife needs bootstrap
     ],

@@ -1,67 +1,35 @@
-"""Adapters turning an observation plus a prediction into a scalar for detectors."""
+"""
+Drift statistics: turn an observation plus the selector's prediction into the
+scalar a scalar drift detector consumes.
+
+A drift statistic is any callable ``(observation, prediction)`` returning
+``(value, censored)`` (``censored=True``: ``value`` is only a bound) or
+``None`` if there is nothing to feed to the detector.
+"""
 
 from __future__ import annotations
 
 import math
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal, Optional, Tuple
 
 from asf.online.prediction import PredictionRecord
 
 if TYPE_CHECKING:
     from asf.online.base import Observation
 
+DriftStatistic = Callable[
+    ["Observation", Optional[PredictionRecord]], Optional[Tuple[float, bool]]
+]
 
-@dataclass(frozen=True)
-class ScalarSample:
+
+class LogRuntimeResidual:
     """
-    One value of a scalar drift stream.
+    ``log(observed) - log(predicted)`` runtime of the primary algorithm
+    (positive = slower than predicted). Needs ``predicted_runtime``.
 
-    Attributes
-    ----------
-    value : float
-        The statistic.
-    censored : bool, default=False
-        ``True`` if ``value`` is a bound rather than an exact value.
-    """
-
-    value: float
-    censored: bool = False
-
-
-class AbstractDriftStatistic(ABC):
-    """Maps ``(observation, prediction)`` to a :class:`ScalarSample`."""
-
-    @abstractmethod
-    def __call__(
-        self, observation: "Observation", prediction: PredictionRecord | None
-    ) -> ScalarSample | None:
-        """
-        Return the sample for this instance, or ``None`` if there is nothing
-        to feed to the detector (e.g. the selector made no runtime prediction).
-        """
-
-
-class LogRuntimeResidual(AbstractDriftStatistic):
-    """
-    ``log(observed) - log(predicted)`` runtime of the primary algorithm.
-
-    Positive values mean the algorithm was slower than predicted. If the
-    primary run was censored, the observed runtime is the budget, so the
-    value is a *lower bound* of the true residual.
-
-    Requires a selector that sets ``PredictionRecord.predicted_runtime``;
-    otherwise no value is produced. Intended for runtime minimisation.
-
-    Parameters
-    ----------
-    censored : {"emit", "skip"}, default="emit"
-        ``"emit"``: pass censored residuals on with ``censored=True``.
-        ``"skip"``: produce no value for censored runs.
-    floor : float, default=1e-6
-        Runtimes (observed and predicted) are clipped to at least ``floor``
-        before taking logs, so zero runtimes stay finite.
+    A censored run gives a lower bound, which is passed on
+    (``censored="emit"``) or dropped (``"skip"``). Runtimes are clipped to
+    ``floor`` before taking logs.
     """
 
     def __init__(
@@ -76,7 +44,7 @@ class LogRuntimeResidual(AbstractDriftStatistic):
 
     def __call__(
         self, observation: "Observation", prediction: PredictionRecord | None
-    ) -> ScalarSample | None:
+    ) -> tuple[float, bool] | None:
         if prediction is None or prediction.predicted_runtime is None:
             return None
         predicted = float(prediction.predicted_runtime)
@@ -92,4 +60,4 @@ class LogRuntimeResidual(AbstractDriftStatistic):
         value = math.log(max(observed, self.floor)) - math.log(
             max(predicted, self.floor)
         )
-        return ScalarSample(value=value, censored=is_censored)
+        return value, is_censored

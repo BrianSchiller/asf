@@ -3,12 +3,14 @@ Online algorithm selection under distribution drift.
 
 Layout:
     base         -- AbstractOnlineSelector, Observation (propose/observe contract)
+    prediction   -- PredictionRecord (what a selector decided)
+    gate         -- extra-run gates (which additional algorithms to run)
     buffer       -- sliding window over partially observed instances
     imputation   -- rules for learning from censored (timed-out) runs
-    drift        -- drift detectors (WHEN to reconfigure)
-    retraining   -- retrain policies tying detectors to selectors
-    selectors    -- online selectors (HOW to reconfigure)
-    streams      -- instance streams with controlled drift
+    drift        -- drift detectors (WHEN to react)
+    retraining   -- drift responses (HOW to react)
+    selectors    -- online selectors
+    streams      -- instance streams with covariate drift from benchmark data
     evaluation   -- prequential evaluation loop and metrics
 """
 

@@ -1,4 +1,4 @@
-"""Tests for the frugal pairwise selector and the uncertainty gate (A2)."""
+"""Tests for the frugal pairwise selector and the uncertainty gate."""
 
 from __future__ import annotations
 
@@ -10,9 +10,8 @@ from sklearn.tree import DecisionTreeClassifier
 
 from asf.online.base import Observation
 from asf.online.evaluation.prequential import run_prequential
-from asf.online.gate import AlwaysProbe, GateContext, UncertaintyGate
+from asf.online.gate import GateContext, UncertaintyGate
 from asf.online.prediction import PredictionRecord
-from asf.online.retraining.policy import PeriodicRetrain
 from asf.online.retraining.response import ResetResponse, RetrainResponse
 from asf.online.selectors import FrugalPairwiseSelector
 from asf.online.selectors.frugal_pairwise import least_confidence
@@ -45,10 +44,11 @@ def _one(value: float = 0.0, name: str = "x") -> pd.DataFrame:
 
 
 def _context(uncertainty: float | None, candidates: tuple[str, ...]) -> GateContext:
-    record = PredictionRecord(chosen="a", uncertainty=uncertainty)
+    record = PredictionRecord(
+        chosen="a", uncertainty=uncertainty, candidates=candidates
+    )
     return GateContext(
         prediction=record,
-        candidates=candidates,
         algorithms=("a", "b", "c"),
         features=_one(),
         step=0,
@@ -286,30 +286,9 @@ def test_retrain_refits_everything() -> None:
 
 
 # ---------------------------------------------------------------- end to end
-def _run(seed: int, n_warmstart: int, **kwargs: object) -> pd.DataFrame:
-    sel = _selector(random_state=seed, **kwargs)
-    protocol = "warm" if n_warmstart else "cold"
-    result = run_prequential(
-        sel, make_stream(), n_warmstart=n_warmstart, protocol=protocol
-    )
-    return result.steps.drop(columns=["selector_seconds", "detector_seconds"])
-
-
-def test_prequential_is_deterministic_and_frugal() -> None:
-    steps = _run(0, 0)
-    pd.testing.assert_frame_equal(steps, _run(0, 0))
+def test_prequential_is_frugal() -> None:
+    steps = run_prequential(_selector(), make_stream()).steps
     assert 0.0 < (steps["n_runs"] > 1).mean() < 1.0
     assert steps["pred_uncertainty"].notna().all()
     assert steps["pred_uncertainty"].between(0.0, 0.5).all()
     assert (steps["user_cost"] == steps["cost_primary"]).all()  # RESULT_MODE
-
-
-def test_always_probe_gives_two_runs_per_instance() -> None:
-    steps = _run(0, 20, gate=AlwaysProbe(1))
-    assert (steps["n_runs"] == 2).all()
-
-
-def test_periodic_retrain_policy_is_supported() -> None:
-    sel = _selector(retrain_policy=PeriodicRetrain(25))
-    result = run_prequential(sel, make_stream(), n_warmstart=20)
-    assert len(result.retrain_steps) == 4

@@ -1,8 +1,4 @@
-"""Exploration policies: how a posterior becomes a score for one arm.
-
-The bandit plays the arm with the highest score. UCB and Thompson Sampling
-differ only here; everything else (posteriors, weighting, ...) is shared.
-"""
+"""Exploration policies: how a posterior becomes an arm's score (UCB or TS)."""
 
 from __future__ import annotations
 
@@ -21,34 +17,18 @@ class ExplorationPolicy(ABC):
         self, posterior: Posterior, x: np.ndarray, t: float, rng: np.random.Generator
     ) -> float:
         """
-        Score one arm.
-
-        Parameters
-        ----------
-        posterior : Posterior
-            The arm's posterior.
-        x : np.ndarray
-            Model input of the current instance.
-        t : int
-            Time index (by default the number of observations so far).
-        rng : np.random.Generator
-            Source of randomness.
+        Score one arm at model input ``x`` and time ``t``.
         """
 
 
 class UCBPolicy(ExplorationPolicy):
     """
-    Optimism in the face of uncertainty: ``mean + bonus * width``.
+    Optimism in the face of uncertainty: ``mean + alpha * width``.
 
-    Parameters
-    ----------
-    alpha : float, default=1.0
-        Exploration strength.
-    ucb1 : bool, default=False
-        Multiply the bonus by ``sqrt(2 ln t)``. With a ``GaussianPosterior``
-        (``prior_precision=0``, ``noise_var=1``) and ``alpha=1`` this is the
-        classic UCB1 index ``mean + sqrt(2 ln t / n)``. Without it, the bonus
-        is constant in ``t``, as in LinUCB (Li et al., 2010).
+    ``ucb1=True`` multiplies the bonus by ``sqrt(2 ln t)``: with a
+    ``GaussianPosterior`` (``prior_precision=0``, ``noise_var=1``) and
+    ``alpha=1`` the classic UCB1 index. Without it the bonus is constant in
+    ``t``, as in LinUCB (Li et al., 2010).
     """
 
     def __init__(self, alpha: float = 1.0, ucb1: bool = False) -> None:
@@ -71,13 +51,8 @@ class UCBPolicy(ExplorationPolicy):
 
 class ThompsonPolicy(ExplorationPolicy):
     """
-    Thompson Sampling: score = one draw from the posterior.
-
-    Parameters
-    ----------
-    scale : float, default=1.0
-        Inflates the posterior's standard deviation (``v`` in Agrawal & Goyal's
-        LinTS); larger means more exploration.
+    Thompson Sampling: score = one posterior draw; ``scale`` inflates the
+    posterior sd (``v`` in Agrawal & Goyal's LinTS).
     """
 
     def __init__(self, scale: float = 1.0) -> None:

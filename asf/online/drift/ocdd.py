@@ -1,43 +1,26 @@
 """
 Feature drift detection with a one-class classifier (OCDD).
 
-This implements the One-Class Drift Detector of Gözüaçık and Can ("Concept
-learning using one-class classifiers for implicit drift detection in evolving
-data streams", Artificial Intelligence Review 54, 2021), Algorithm 1:
-
-1. a one-class SVM is trained on the reference data and labels every new
-   instance as typical or outlier,
-2. the labels of the most recent ``window_size`` instances are kept; once the
-   window is full, the share of outliers in it is compared with ``threshold``
-   after every instance,
-3. on drift only the newest ``threshold * window_size`` instances are kept
-   and the one-class SVM is retrained on them; without drift the oldest
-   instance leaves the window.
+The One-Class Drift Detector of Gözüaçık and Can (Artificial Intelligence
+Review 54, 2021), Algorithm 1: a one-class SVM trained on the reference
+labels each new instance typical or outlier; once the window of the last
+``window_size`` labels is full, drift is signalled when its outlier share
+reaches ``threshold``. On drift the SVM is retrained on the newest
+``threshold * window_size`` instances; otherwise the oldest one leaves.
 
 Differences from the paper:
 
-* ``baseline="cross_validated"`` (off by default) is not in the paper. A
-  one-class SVM calls a part of perfectly typical new data outliers: about
-  ``nu`` of it, and more when it was trained on few instances with many
-  features. With the paper's settings (``nu=0.5``, ``threshold=0.3``) the
-  detector therefore signals whenever its window is full, drift or not. With
-  the baseline, that expected share is estimated by cross-validation at every
-  training and drift is signalled if the window exceeds it by ``threshold``.
-* Features are median-imputed and standardised before they reach the SVM
-  (the paper does not preprocess); both steps are refitted with every
-  training. This is the numeric branch of ASF's default preprocessor
-  (:func:`~asf.preprocessing.sklearn_preprocessor.get_default_preprocessor`),
-  applied to arrays because the detector is called once per instance.
-* The incoming instance is added to the window before the check. As printed,
-  Algorithm 1 does not store the instance that arrives on a check.
-* After a drift the kept instances are labelled again by the retrained SVM,
-  as drawn in Fig. 3 of the paper. Keeping their old labels would start the
-  next window with the outliers that caused the drift.
-* The detector adapts itself when it signals, so
-  :meth:`~OneClassDriftDetector.reset` (called by a selector after it rebuilt
-  its model) does nothing.
-* :meth:`~OneClassDriftDetector.score` (per-instance unfamiliarity) is not
-  part of the paper.
+* ``baseline="cross_validated"`` (off by default): an SVM calls about ``nu``
+  of typical new data outliers (more with few instances and many features),
+  so the paper's settings (``nu=0.5``, ``threshold=0.3``) signal whenever the
+  window is full. The baseline estimates that share by cross-validation and
+  signals only if the window exceeds it by ``threshold``.
+* Features are median-imputed and standardised (refitted at every training).
+* The arriving instance joins the window before the check.
+* After a drift the kept instances are relabelled by the new SVM (as in
+  Fig. 3); old labels would start the next window with the drift's outliers.
+* The detector re-references itself, so ``reset`` does nothing.
+* ``score`` (per-instance unfamiliarity) is not in the paper.
 """
 
 from __future__ import annotations
@@ -61,62 +44,26 @@ class OneClassDriftDetector(AbstractDriftDetector):
     """
     Covariate drift detector: outlier share of a one-class SVM (OCDD).
 
-    The detector consumes one instance at a time. The first check happens
-    once ``window_size`` instances have arrived after :meth:`fit`; from then
-    on it checks at every instance, until a drift empties most of the window.
-    Only features are used; ``performance`` is ignored.
-
-    The reference is the data given to :meth:`fit` (the selector passes its
-    buffer). After a drift the detector retrains on the newest ``n_keep_``
-    window instances by itself, whether or not the selector responds.
+    Checks at every instance once ``window_size`` have arrived after ``fit``
+    (features only). After a drift it retrains on the newest ``n_keep_``
+    instances by itself, whether or not the selector responds. Defaults are
+    the paper's; the SVM is deterministic, so there is no ``random_state``.
 
     Parameters
     ----------
-    window_size : int, default=250
-        Number of recent instances ``w`` whose outlier labels are kept
-        (paper: 250).
     threshold : float, default=0.3
-        ``rho`` of the paper, in (0, 1]: drift is signalled if the share of
-        outliers in the window is at least ``threshold`` (plus the baseline,
-        see below). It is also the share of the window that is kept, and
-        retrained on, after a drift (paper: 0.3).
-        ``threshold * window_size`` must be at least 2.
-    nu : float, default=0.5
-        ``nu`` of the one-class SVM, in (0, 1]: an upper bound on the share
-        of training instances outside the boundary (paper: 0.5).
-    kernel : str, default="rbf"
-        Kernel of the one-class SVM.
-    gamma : str or float, default="scale"
-        Kernel coefficient of the one-class SVM.
+        ``rho`` in (0, 1]: the outlier share (above the baseline) that
+        signals drift, and the share of the window kept after it
+        (``threshold * window_size >= 2``).
+    nu, kernel, gamma
+        Of the one-class SVM.
     baseline : {"none", "cross_validated"}, default="none"
-        ``"none"``: the paper's rule, ``outlier share >= threshold``.
-        ``"cross_validated"``: signal if
-        ``outlier share - baseline_share_ >= threshold``, where
-        ``baseline_share_`` is the share of training instances a one-class
-        SVM calls outliers when it was not trained on them (``n_folds``-fold
-        cross-validation on consecutive folds, repeated at every training).
-        With fewer than ``2 * n_folds`` training instances the share on the
-        training data itself is used.
-    n_folds : int, default=5
-        Folds for ``baseline="cross_validated"``.
+        ``"cross_validated"`` subtracts ``baseline_share_``, the outlier share
+        of an SVM on data it was not trained on (``n_folds`` consecutive
+        folds; with fewer than ``2 * n_folds`` instances the in-sample share).
 
-    Attributes
-    ----------
-    feature_names_ : list[str]
-        Feature names seen in ``fit``.
-    n_keep_ : int
-        Instances kept after a drift, ``threshold * window_size`` rounded.
-    baseline_share_ : float
-        Outlier share expected without drift (0 for ``baseline="none"``).
-    last_outlier_share_ : float or None
-        Share of outliers in the window at the last check.
-    n_retrains_ : int
-        Number of times the detector retrained itself after a drift.
-
-    Notes
-    -----
-    The one-class SVM is deterministic, so the detector has no
-    ``random_state``.
+    Attributes: ``n_keep_``, ``baseline_share_``, ``last_outlier_share_`` and
+    ``n_retrains_`` (self-retrainings after a drift).
     """
 
     def __init__(
@@ -165,12 +112,7 @@ class OneClassDriftDetector(AbstractDriftDetector):
         self, features: pd.DataFrame, performance: pd.DataFrame | None = None
     ) -> "OneClassDriftDetector":
         """Train the one-class SVM on ``features`` and empty the window."""
-        if len(features) < 2:
-            raise ValueError("At least two reference instances are required.")
-        if features.shape[1] == 0:
-            raise ValueError("At least one feature is required.")
-        self.feature_names_ = [str(c) for c in features.columns]
-        self._train(features.to_numpy(float))
+        self._train(self._reference_matrix(features))
         self._rows.clear()
         self._flags.clear()
         self.last_outlier_share_ = None
@@ -212,12 +154,8 @@ class OneClassDriftDetector(AbstractDriftDetector):
         self, features: pd.DataFrame, performance: pd.DataFrame | None = None
     ) -> DriftSignal:
         """
-        Consume new instance(s) and report whether the latest check found drift.
-
-        Accepts one or several rows; if several rows complete several checks,
-        the signal reports drift if any of them did. The signal's ``score``
-        is the outlier share of the window at the last check minus the
-        baseline share at that check (drift if at least ``threshold``).
+        Consume one or more rows; drift if any completed check drifted.
+        ``score`` = outlier share minus baseline share at the last check.
         """
         drift = False
         for row in self._matrix(features):
@@ -246,14 +184,8 @@ class OneClassDriftDetector(AbstractDriftDetector):
 
     # ---------------------------------------------------------------- score
     def score(self, features: pd.DataFrame) -> np.ndarray:
-        """
-        Per-instance distance outside the one-class boundary.
-
-        The negated decision value of the current one-class SVM: positive for
-        instances it calls outliers, negative for typical ones, larger the
-        further outside. The scale depends on the kernel and changes with
-        every retraining.
-        """
+        """Negated SVM decision value: positive outside the boundary (scale
+        changes with every retraining)."""
         X = self._matrix(features)
         assert self._model is not None
         return -np.asarray(self._model.decision_function(X), dtype=float)
@@ -261,22 +193,5 @@ class OneClassDriftDetector(AbstractDriftDetector):
     def reset(
         self, features: pd.DataFrame, performance: pd.DataFrame | None = None
     ) -> None:
-        """
-        Do nothing: the detector re-references itself when it signals.
-
-        A selector calls this after it rebuilt its model. Refitting on its
-        buffer would mix instances from before and after the drift, whereas
-        the detector has already retrained on the newest window instances.
-        """
-
-    def _matrix(self, features: pd.DataFrame) -> np.ndarray:
-        if self._model is None:
-            raise RuntimeError("Call fit() before update()/score().")
-        if list(features.columns) == self.feature_names_:
-            return features.to_numpy(float)
-        missing = [
-            c for c in self.feature_names_ if c not in map(str, features.columns)
-        ]
-        if missing:
-            raise ValueError(f"Missing feature columns: {missing[:5]}")
-        return features.rename(columns=str)[self.feature_names_].to_numpy(float)
+        """Do nothing: refitting on the selector's buffer would mix data from
+        before and after the drift; the detector already retrained itself."""

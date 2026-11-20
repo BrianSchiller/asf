@@ -4,13 +4,26 @@ from sklearn.ensemble import RandomForestClassifier
 
 from asf.online.streams.stream import InstanceStream
 
-from .conftest import make_stream
+from .conftest import CUTOFF, make_stream
 
 from typing import Any
 
 from asf.online.base import AbstractOnlineSelector, Observation
 from asf.online.evaluation import run_prequential
-from asf.online.selectors import StaticOnlineSelector
+from asf.online.prediction import PredictionRecord
+from asf.online.gate import UncertaintyGate
+from asf.online.imputation import SampledImputer
+from asf.online.selectors import (
+    FrugalPairwiseSelector,
+    LinTSSelector,
+    OnlineEPMSelector,
+    OnlinePairwiseSelector,
+    StaticOnlineSelector,
+    ThompsonSamplingSelector,
+)
+from asf.online.selectors.bandits import SlidingWindow
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier
 from asf.selectors import PairwiseClassifier
 
 
@@ -26,15 +39,16 @@ class _Scripted(AbstractOnlineSelector):
     ) -> None:
         pass
 
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-        return [("a", 0.0), ("b", 0.0)]
+    def _select(self, features: pd.DataFrame) -> PredictionRecord:
+        return PredictionRecord("a", candidates=("b",))
 
     def _observe(self, observation: Observation) -> None:
         self.seen.append(observation)
         if self.step_ == 4:
-            with self._timed() as t:
-                pass
-            self._record_retrain(t.seconds)
+            self.retrain()
+
+    def _retrain(self) -> None:
+        pass
 
 
 def test_cost_accounting_and_feedback(stream: InstanceStream) -> None:
@@ -73,8 +87,8 @@ def test_cold_start_and_infinite_cutoff() -> None:
 
 def test_censoring_and_budget(stream: InstanceStream) -> None:
     class _Short(_Scripted):
-        def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-            return [("a", 10.0)]  # budget below the 50s of the slow case
+        def _select(self, features: pd.DataFrame) -> PredictionRecord:
+            return PredictionRecord("a", budget=10.0)  # below the 50s slow case
 
     sel = _Short(window_size=50)
     res = run_prequential(sel, stream, n_warmstart=40, par_factor=10)
@@ -153,11 +167,47 @@ def test_maximize_quality_rejects_runtime_constraints() -> None:
         )
 
     class _Budgeted(_Scripted):
-        def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-            return [("a", 5.0)]
+        def _select(self, features: pd.DataFrame) -> PredictionRecord:
+            return PredictionRecord("a", budget=5.0)
 
     with pytest.raises(ValueError, match="unlimited run budgets"):
         run_prequential(
             _Budgeted(maximize=True),
             InstanceStream(features, performance, cutoff=float("inf")),
         )
+
+
+DETERMINISTIC = {
+    "ts_gated": lambda seed: ThompsonSamplingSelector(
+        budget=CUTOFF, gate=UncertaintyGate(rate=0.3, random_state=0), random_state=seed
+    ),
+    "lints_sampled_refit": lambda seed: LinTSSelector(
+        budget=CUTOFF,
+        weighting=SlidingWindow(50),
+        imputation=SampledImputer(),
+        random_state=seed,
+    ),
+    "frugal": lambda seed: FrugalPairwiseSelector(
+        model_class=DecisionTreeClassifier, random_state=seed
+    ),
+    "rook": lambda seed: OnlinePairwiseSelector(reference_period=20, random_state=seed),
+    "epm": lambda seed: OnlineEPMSelector(
+        strategy="epsilon_greedy",
+        epsilon=0.3,
+        estimator=RandomForestRegressor(n_estimators=10),
+        uncertainty=None,
+        budget=CUTOFF,
+        random_state=seed,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(DETERMINISTIC))
+def test_same_seed_same_run(stream: InstanceStream, name: str) -> None:
+    def run(seed: int) -> pd.DataFrame:
+        result = run_prequential(DETERMINISTIC[name](seed), stream, n_warmstart=10)
+        return result.steps.drop(columns=["selector_seconds", "detector_seconds"])
+
+    pd.testing.assert_frame_equal(run(3), run(3))
+    if name in ("ts_gated", "lints_sampled_refit", "epm"):  # explore at random
+        assert not run(3)["primary"].equals(run(4)["primary"])

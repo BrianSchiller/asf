@@ -14,22 +14,10 @@ if TYPE_CHECKING:
 
 class ObservationBuffer:
     """
-    Sliding window over the most recent instances seen by an online selector.
+    Sliding window (``None`` = everything) over the recent instances.
 
-    For every instance it stores the features and a *partially observed*
-    performance row: algorithms that were not run are ``NaN``. A parallel
-    boolean mask records which observed entries were censored (run stopped at
-    its budget), which is what censored-imputation methods need.
-
-    Parameters
-    ----------
-    algorithms : Sequence[str]
-        Algorithm names (column order of the performance matrix).
-    feature_names : Sequence[str]
-        Feature names (column order of the feature matrix).
-    window_size : int or None, default=200
-        Maximum number of instances kept; older instances are dropped.
-        ``None`` keeps the full history.
+    Per instance it stores the features, a partially observed performance row
+    (``NaN`` = not run) and which observed runs were censored.
     """
 
     def __init__(
@@ -113,16 +101,8 @@ class ObservationBuffer:
     def pair_data(
         self, algo_a: str, algo_b: str
     ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
-        """
-        Window instances on which BOTH algorithms were observed.
-
-        This is the training data of one pairwise (one-vs-one) classifier.
-
-        Returns
-        -------
-        tuple
-            ``(features, runtimes_a, runtimes_b)`` restricted to the common rows.
-        """
+        """``(features, runtimes_a, runtimes_b)`` of the instances on which
+        both algorithms ran (one pairwise classifier's training data)."""
         perf = self.performance()
         mask = perf[algo_a].notna() & perf[algo_b].notna()
         return (

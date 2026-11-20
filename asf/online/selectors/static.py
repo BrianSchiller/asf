@@ -7,24 +7,14 @@ from typing import Any, cast
 import pandas as pd
 
 from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.prediction import PredictionRecord
 from asf.selectors.abstract_selector import AbstractSelector
 
 
 class StaticOnlineSelector(AbstractOnlineSelector):
     """
-    Wrap any offline ASF selector so it can run in the online loop.
-
-    It is fitted once on the warm-start data and never updated (so it needs a
-    warm start, ``SUPPORTS_COLD_START = False``); it is the
-    "no adaptation" lower bound for drifting streams and doubles as an adapter
-    check for the online interface.
-
-    Parameters
-    ----------
-    selector : AbstractSelector
-        An unfitted offline selector with ``prediction_mode="aslib"``.
-    **kwargs : Any
-        Forwarded to :class:`AbstractOnlineSelector`.
+    An offline ASF selector (``prediction_mode="aslib"``) fitted once on the
+    warm start and never updated: the "no adaptation" baseline.
     """
 
     SUPPORTS_COLD_START = False
@@ -40,14 +30,15 @@ class StaticOnlineSelector(AbstractOnlineSelector):
     ) -> None:
         self.selector.fit(features, performance, **kwargs)
 
-    def _propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
+    def _select(self, features: pd.DataFrame) -> PredictionRecord:
         prediction = self.selector.predict(features)
         if not isinstance(prediction, dict):
             raise TypeError("The wrapped selector must return ASlib-style predictions.")
         schedule = cast(
             "list[tuple[str, float | None]]", next(iter(prediction.values()))
         )
-        return [(str(a), float(b or 0.0)) for a, b in schedule[:1]]
+        algo, budget = schedule[0]
+        return PredictionRecord(str(algo), budget=float(budget or 0.0))
 
     def _observe(self, observation: Observation) -> None:
         return None

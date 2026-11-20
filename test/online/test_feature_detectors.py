@@ -1,7 +1,6 @@
-"""End to end: each covariate drift detector adapts a selector after a feature shift.
+"""What the feature drift detectors share, and that each adapts a selector.
 
-Replaces the per-detector integration tests. Data generators come from the
-detector test modules so the shifts stay identical to the unit tests.
+Data comes from the detector test modules, so the shifts match the unit tests.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import pandas as pd
 import pytest
 
 from asf.online.drift import (
+    AbstractDriftDetector,
     KSSubspaceEnsembleDetector,
     OneClassDriftDetector,
     PCAReconstructionDetector,
@@ -24,6 +24,7 @@ from asf.online.streams.stream import InstanceStream
 from . import test_ks_subspace_ensemble as ks
 from . import test_ocdd as ocdd
 from . import test_pca_detector as pca
+from .conftest import stream_from
 
 DRIFT_AT = 200
 
@@ -31,17 +32,9 @@ DRIFT_AT = 200
 def make_stream(pre: pd.DataFrame, post: pd.DataFrame) -> InstanceStream:
     """The best algorithm swaps at the covariate shift."""
     x = pd.concat([pre, post], ignore_index=True)
-    perf = np.where(
-        (np.arange(len(x)) < len(pre))[:, None], [[5, 50, 20]], [[50, 5, 20]]
-    ).astype(float)
-    idx = pd.Index([f"i{k}" for k in range(len(x))])
-    x.index = idx
-    return InstanceStream(
-        x,
-        pd.DataFrame(perf, index=idx, columns=["a", "b", "c"]),
-        cutoff=1000.0,
-        drift_points=(DRIFT_AT,),
-    )
+    before = (np.arange(len(x)) < len(pre))[:, None]
+    perf = np.where(before, [[5, 50, 20]], [[50, 5, 20]])
+    return stream_from(x, perf, cutoff=1000.0, drift_points=(DRIFT_AT,))
 
 
 CASES: dict[str, tuple[Callable, Callable]] = {
@@ -83,3 +76,31 @@ def test_detector_adapts_the_selector_after_the_shift(name: str) -> None:
         adaptive.steps["user_cost"].iloc[after].mean()
         < static.steps["user_cost"].iloc[after].mean()
     )
+
+
+DETECTORS: dict[str, Callable[[], AbstractDriftDetector]] = {
+    "pca": lambda: PCAReconstructionDetector(random_state=0),
+    "ks": lambda: KSSubspaceEnsembleDetector(subspace_size=3, random_state=0),
+    "ocdd": lambda: OneClassDriftDetector(window_size=40),
+}
+
+
+@pytest.mark.parametrize("name", list(DETECTORS))
+def test_shared_contract(name: str) -> None:
+    make = DETECTORS[name]
+    ref, new = ks.sample(100, 0), ks.sample(60, 1, shift=ks.BLOCK0)
+    with pytest.raises(RuntimeError):
+        make().update(new)
+    with pytest.raises(RuntimeError):
+        make().score(new)
+    for bad in (ref.iloc[:1], pd.DataFrame(index=range(5))):
+        with pytest.raises(ValueError):
+            make().fit(bad)
+    det = make().fit(ref)
+    # columns are matched by name; a missing one is an error
+    assert (det.score(new[new.columns[::-1]]) == det.score(new)).all()
+    with pytest.raises(ValueError):
+        det.score(new.drop(columns="f0"))
+    # performance is ignored
+    perf = pd.DataFrame({"a": np.arange(100.0)})
+    assert make().fit(ref, perf).update(new, perf.iloc[:60]) == det.update(new)

@@ -17,28 +17,12 @@ import asf
 
 def asf_provenance(refresh: bool = False) -> dict[str, Any]:
     """
-    Version, commit and dirty flag of the ASF code that is imported.
+    Version, commit and dirty flag of the imported ASF code (cached per
+    process; ``refresh=True`` recomputes).
 
-    The answer is computed once per process (``git status`` can be slow on
-    large or network checkouts) and cached; pass ``refresh=True`` to
-    recompute it.
-
-    Parameters
-    ----------
-    refresh : bool, default=False
-        Ignore the cached answer.
-
-    Returns
-    -------
-    dict
-        ``version``, ``commit``, ``dirty`` and ``commit_source``:
-
-        * ``"git"``: ASF is imported from a git checkout; ``dirty`` is true if
-          tracked files differ from ``HEAD`` or untracked files exist under
-          ``asf/``.
-        * ``"direct_url"``: ASF was pip-installed from a pinned git URL; the
-          commit comes from the install record and ``dirty`` is ``None``.
-        * ``"unknown"``: neither; ``commit`` and ``dirty`` are ``None``.
+    ``commit_source`` is ``"git"`` (a checkout; dirty = tracked changes or
+    untracked files under ``asf/``), ``"direct_url"`` (pip-installed from a
+    pinned git URL; dirty unknown) or ``"unknown"``.
     """
     global _CACHE
     if _CACHE is None or refresh:
@@ -102,14 +86,11 @@ def _git(root: Path, *args: str) -> str | None:
 
 def describe(obj: Any) -> Any:
     """
-    JSON-ready description of a configuration value.
-
-    Primitives are kept (non-finite floats become ``None``), containers are
-    described element-wise, classes become their qualified name, and objects
-    become ``{"class": ..., "params": ...}``: online selectors with their
-    captured constructor arguments, other objects with the attributes that
-    match their constructor parameters (scikit-learn convention). Anything
-    else (e.g. ``functools.partial``) is described by its ``repr``.
+    JSON-ready description of a configuration value: primitives as they are
+    (non-finite floats -> ``None``), containers element-wise, classes by
+    name, objects as ``{"class", "params"}`` (online selectors with their
+    captured arguments, others with attributes matching their constructor),
+    anything else by ``repr``.
     """
     if obj is None or isinstance(obj, (bool, str)):
         return obj

@@ -1,26 +1,19 @@
 """
 Extra-run gates: decide, per instance, which additional algorithms to run.
 
-Running more than the selected algorithm costs compute time but yields
-performance information the selector can learn from. A gate makes that
-decision from the selector's prediction (including its uncertainty), the
-selector's nominees and, optionally, a detector's per-instance score.
+Extra runs cost compute but give the selector more to learn from. Every
+online selector owns one gate; its default reproduces the selector's original
+behaviour (Rook: all ``n_additional`` nominees, bandits: none).
 
-Every :class:`~asf.online.base.AbstractOnlineSelector` owns one gate
-(``gate=...``); without one it uses the selector's default, which reproduces
-the selector's original behaviour (Rook selector: all ``n_additional``
-nominees; bandits: none).
-
-:class:`ScoreGate` is the base of all criterion gates: a subclass rates each
-instance with one number ("how much reason is there for an extra run?") and
-the base class turns it into a decision, either with a fixed ``threshold``
-or with a ``rate`` ("run extras on the q% highest-rated recent instances").
-:class:`UncertaintyGate` rates by the selector's uncertainty; further
-criteria are in :mod:`asf.online.gate_criteria`.
+:class:`ScoreGate` rates each instance with one number and fires either above
+a ``threshold`` or on the ``rate`` share of highest-rated recent instances.
+Criteria: :class:`UncertaintyGate`, :class:`CloseCallGate`,
+:class:`UnfamiliarityGate`, :class:`TimeoutRiskGate`.
 """
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
@@ -44,28 +37,19 @@ class GateContext:
     Attributes
     ----------
     prediction : PredictionRecord
-        The selector's decision for this instance (``extras`` still empty).
-    candidates : tuple[str, ...]
-        Algorithms the gate may choose from, most useful first (the
-        selector's nominees, ``prediction.candidates``).
-    algorithms : tuple[str, ...]
-        All algorithms of the portfolio.
-    features : pd.DataFrame
-        The single-row feature frame of the instance.
+        The selector's decision (``extras`` still empty).
     step : int
         0-based index of the instance in the evaluated stream.
     instance_score : float or None
-        Per-instance unfamiliarity score of the selector's feature detector
-        (higher = less familiar). Only computed if the gate sets
-        ``needs_instance_score`` and the detector is fitted.
+        Unfamiliarity score of the selector's feature detector (higher = less
+        familiar); only computed if the gate sets ``needs_instance_score``.
     last_signal : DriftSignal or None
         The detector's output on the previous instance.
     steps_since_drift : int or None
-        Instances since the last drift signal (``None`` = no signal yet).
+        Instances since the last drift signal (``None`` = none yet).
     """
 
     prediction: PredictionRecord
-    candidates: tuple[str, ...]
     algorithms: tuple[str, ...]
     features: pd.DataFrame
     step: int
@@ -73,14 +57,15 @@ class GateContext:
     last_signal: DriftSignal | None = None
     steps_since_drift: int | None = None
 
+    @property
+    def candidates(self) -> tuple[str, ...]:
+        """The selector's nominees for extra runs, most useful first."""
+        return self.prediction.candidates
+
     def ranked_alternatives(self) -> tuple[str, ...]:
         """
-        All algorithms except the chosen one, most promising first.
-
-        The selector's nominees come first (in their order), then the
-        remaining algorithms by descending ``prediction.scores`` (portfolio
-        order for ties or without scores). Useful for gates that pick extras
-        themselves, e.g. for selectors that nominate nothing (bandits).
+        All algorithms except the chosen one: the nominees first, then the
+        rest by descending ``prediction.scores`` (portfolio order on ties).
         """
         chosen = self.prediction.chosen
         head = [a for a in self.candidates if a != chosen]
@@ -96,14 +81,9 @@ class AbstractExtraRunGate(ABC):
     """
     Decides which extra algorithms to run for one instance.
 
-    Subclasses implement :meth:`extras`. They must not change the selector;
-    any state they keep (e.g. a running threshold) is their own.
-
-    Attributes
-    ----------
-    needs_instance_score : bool
-        If ``True``, the selector computes its feature detector's
-        per-instance score and passes it as ``context.instance_score``.
+    A gate must not change the selector. With ``needs_instance_score = True``
+    the selector passes its feature detector's score as
+    ``context.instance_score``.
     """
 
     needs_instance_score: bool = False
@@ -111,61 +91,35 @@ class AbstractExtraRunGate(ABC):
     @abstractmethod
     def extras(self, context: GateContext) -> Sequence[str]:
         """
-        Return the extra algorithms to run, in order.
-
-        The selector drops duplicates and the primary choice and rejects
-        unknown algorithms. Returning algorithms outside
-        ``context.candidates`` is allowed.
+        The extra algorithms to run, in order. Duplicates and the primary
+        choice are dropped by the selector; non-nominees are allowed.
         """
 
     def observe(self, prediction: PredictionRecord, observation: "Observation") -> None:
-        """
-        See what happened on the instance the gate last decided on.
-
-        Called by the selector once per instance, after the scheduled
-        algorithms ran. Gates that track what their extras cost or yielded
-        (e.g. a compute budget) override it; the default does nothing.
-
-        Parameters
-        ----------
-        prediction : PredictionRecord
-            The final record of the instance; ``prediction.extras`` are the
-            extra algorithms that were scheduled.
-        observation : Observation
-            Runtimes and censoring of all executed algorithms.
-        """
+        """Called after the scheduled runs, e.g. to track a compute budget."""
 
     def reset(self) -> None:
-        """
-        Forget all state. Called when the selector is fitted; the default
-        does nothing.
-        """
+        """Forget all state (called when the selector is fitted)."""
 
 
-class NeverProbe(AbstractExtraRunGate):
+class NoExtrasGate(AbstractExtraRunGate):
     """Never run extra algorithms (the bandits' default)."""
 
     def extras(self, context: GateContext) -> Sequence[str]:
         return ()
 
 
-class ProbeAllAfterDrift(AbstractExtraRunGate):
+class AfterDriftGate(AbstractExtraRunGate):
     """
-    Run every algorithm on the first instance after a drift signal.
+    Run every algorithm on the first instance after a drift signal; ``gate``
+    (default: no extras) decides on all other instances.
 
-    One full round of runs right after a detected change gives the selector
-    a labelled comparison of all algorithms on the new data (for a pairwise
-    selector: one example for every pair). On all other instances ``gate``
-    decides.
-
-    Parameters
-    ----------
-    gate : AbstractExtraRunGate or None, default=None
-        Gate for all other instances; ``None`` runs no extras there.
+    One full round right after a change gives the selector a comparison of
+    all algorithms on the new data (for a pairwise selector: every pair).
     """
 
     def __init__(self, gate: AbstractExtraRunGate | None = None) -> None:
-        self.gate = gate if gate is not None else NeverProbe()
+        self.gate = gate if gate is not None else NoExtrasGate()
 
     @property
     def needs_instance_score(self) -> bool:  # type: ignore[override]
@@ -183,17 +137,10 @@ class ProbeAllAfterDrift(AbstractExtraRunGate):
         self.gate.reset()
 
 
-class AlwaysProbe(AbstractExtraRunGate):
+class AllNomineesGate(AbstractExtraRunGate):
     """
-    Always run the first ``n`` nominees (all of them for ``n=None``).
-
-    With ``n=None`` this is the default of selectors that nominate a fixed
-    number of extras, such as the Rook selector (``n_additional``).
-
-    Parameters
-    ----------
-    n : int or None, default=None
-        Number of nominees to run; ``None`` = all.
+    Always run the first ``n`` nominees (``None`` = all; the default of
+    selectors with a fixed number of extras, such as Rook's ``n_additional``).
     """
 
     def __init__(self, n: int | None = None) -> None:
@@ -209,53 +156,23 @@ class AlwaysProbe(AbstractExtraRunGate):
 
 class ScoreGate(AbstractExtraRunGate):
     """
-    Base class of gates that rate every instance with one number.
+    Base of gates that rate every instance with one number.
 
-    Subclasses implement :meth:`_score`: how much reason there is to run an
-    extra algorithm on this instance (higher = more; ``None`` = cannot say).
-    The decision rule is shared; exactly one of ``threshold`` and ``rate``
-    must be given:
+    Subclasses implement :meth:`_score` (higher = more reason for an extra
+    run, ``None`` = no rating). Exactly one decision rule is given:
 
-    * ``threshold``: fire if ``score >= threshold``. Instances without a
-      score never fire. The scale of the threshold is the criterion's, so
-      thresholds are not comparable across selectors or criteria.
-    * ``rate`` (``q`` in ``[0, 1]``): fire on the share ``q`` of instances
-      with the highest scores among the last ``window_size`` scored instances
-      (the current one included). With ``g`` earlier scores in the window
-      greater than the current score, ``e`` equal to it and ``k`` in the
-      window in total, the gate fires if ``(g + u * (e + 1)) / (k + 1) < q``
-      with ``u`` uniform in ``[0, 1)``. That is "the score is above the
-      ``1 - q`` quantile of the recent scores", with ties broken at random
-      so that discrete scores (vote gaps) also give a rate of ``q``.
-      Instances without a score fire with probability ``q``. ``q = 1``
-      always fires and ``q = 0`` never does.
+    * ``threshold``: fire if ``score >= threshold`` (unrated instances never
+      fire). The scale is the criterion's.
+    * ``rate`` ``q``: fire on the share ``q`` of highest scores among the last
+      ``window_size`` rated instances. With ``g`` earlier scores greater,
+      ``e`` equal and ``k`` in total, fire if ``(g + u (e + 1)) / (k + 1) < q``
+      with ``u ~ U[0, 1)``, so ties (e.g. vote gaps) still give rate ``q``.
+      Unrated instances fire with probability ``q``. After a drift, scores
+      rise and the gate fires more often until the window has turned over.
 
-    Under a rate, the share of instances with extras is ``q`` as long as the
-    scores are stable. When they rise (e.g. after a drift) the gate fires
-    more often until the window has turned over.
-
-    When the gate fires it runs the first ``n`` nominees of the selector; if
-    the selector nominates none (bandits), the first ``n`` of
-    :meth:`GateContext.ranked_alternatives`.
-
-    Parameters
-    ----------
-    threshold : float or None, default=None
-        Minimum score for extra runs.
-    n : int or None, default=1
-        Number of extra algorithms to run when the gate fires; ``None`` =
-        all nominees (all other algorithms if there are no nominees).
-    rate : float or None, default=None
-        Share ``q`` of instances that get extra runs, in ``[0, 1]``.
-    window_size : int, default=200
-        Number of recent scores a rate is taken from.
-    random_state : int or None, default=None
-        Seed of the tie-breaking under a rate.
-
-    Attributes
-    ----------
-    last_score_ : float or None
-        Score of the last instance decided on.
+    When it fires it runs the first ``n`` nominees (``None`` = all); without
+    nominees (bandits) the first ``n`` of :meth:`GateContext.ranked_alternatives`.
+    ``random_state`` seeds the tie-breaking; ``last_score_`` is the last rating.
     """
 
     def __init__(
@@ -287,7 +204,6 @@ class ScoreGate(AbstractExtraRunGate):
         """Reason for an extra run on this instance (higher = more)."""
 
     def reset(self) -> None:
-        """Forget the recent scores and restart the random stream."""
         self._window: deque[float] = deque(maxlen=self.window_size)
         self._rng = np.random.default_rng(self.random_state)
         self.last_score_: float | None = None
@@ -320,23 +236,85 @@ class ScoreGate(AbstractExtraRunGate):
 
 class UncertaintyGate(ScoreGate):
     """
-    Run extras when the selector is uncertain.
+    Run extras when the selector is uncertain (``prediction.uncertainty``).
 
-    The score is ``prediction.uncertainty``. With a ``threshold`` this is
-    stream-based active learning: an extra run is "queried" only if
-    ``prediction.uncertainty >= threshold`` (Kuş et al., "Frugal Algorithm
-    Selection"), and predictions without an uncertainty never trigger extra
-    runs. With a ``rate`` the extras go to the most uncertain share of the
-    recent instances, which is comparable across selectors.
-
-    Parameters
-    ----------
-    threshold : float or None, default=None
-        Minimum uncertainty for extra runs. Its scale is the selector's (e.g.
-        least confidence in ``[0, 0.5]`` for the frugal pairwise selector).
-    n, rate, window_size, random_state
-        See :class:`ScoreGate`.
+    With a ``threshold`` this is stream-based active learning as in Kuş et
+    al., "Frugal Algorithm Selection"; the scale is the selector's (e.g. least
+    confidence in ``[0, 0.5]`` for the frugal pairwise selector).
     """
 
     def _score(self, context: GateContext) -> float | None:
         return context.prediction.uncertainty
+
+
+class CloseCallGate(ScoreGate):
+    """
+    Run extras when the two best entries of ``prediction.scores`` are nearly
+    tied (votes, predicted performance, bandit index; non-finite ignored).
+
+    ``max_gap`` replaces ``threshold``: fire if the gap is at most ``max_gap``.
+    ``relative=True`` divides the gap by the larger absolute score, e.g. to
+    compare predicted runtimes of easy and hard instances.
+    """
+
+    def __init__(
+        self,
+        max_gap: float | None = None,
+        n: int | None = 1,
+        *,
+        relative: bool = False,
+        rate: float | None = None,
+        window_size: int = 200,
+        random_state: int | None = None,
+    ) -> None:
+        if max_gap is not None and max_gap < 0:
+            raise ValueError("max_gap must be >= 0.")
+        super().__init__(
+            threshold=None if max_gap is None else -float(max_gap),
+            n=n,
+            rate=rate,
+            window_size=window_size,
+            random_state=random_state,
+        )
+        self.max_gap = None if max_gap is None else float(max_gap)
+        self.relative = bool(relative)
+
+    def _score(self, context: GateContext) -> float | None:
+        scores = context.prediction.scores
+        if scores is None:
+            return None
+        values = sorted(
+            (float(v) for v in scores.values() if math.isfinite(v)), reverse=True
+        )
+        if len(values) < 2:
+            return None
+        gap = values[0] - values[1]
+        if self.relative and gap > 0:
+            gap /= max(abs(values[0]), abs(values[1]))
+        return -gap
+
+
+class UnfamiliarityGate(ScoreGate):
+    """
+    Run extras on instances the selector's feature detector finds unfamiliar
+    (its per-instance ``score``). Unrated until the detector is fitted.
+    """
+
+    needs_instance_score = True
+
+    def _score(self, context: GateContext) -> float | None:
+        return context.instance_score
+
+
+class TimeoutRiskGate(ScoreGate):
+    """
+    Run extras when the chosen algorithm is predicted to be slow
+    (``prediction.predicted_runtime``, raw scale, e.g. ``threshold=0.8 *
+    cutoff``): a likely timeout makes a second run pay off.
+    """
+
+    def _score(self, context: GateContext) -> float | None:
+        runtime = context.prediction.predicted_runtime
+        if runtime is None or not math.isfinite(runtime):
+            return None
+        return float(runtime)

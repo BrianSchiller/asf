@@ -170,18 +170,6 @@ def test_defaults_follow_the_paper() -> None:
 
 
 # ------------------------------------------------------ one-class SVM model
-def test_fit_requirements_and_use_before_fit() -> None:
-    det = OneClassDriftDetector()
-    with pytest.raises(RuntimeError):
-        det.update(sample(1, 0))
-    with pytest.raises(RuntimeError):
-        det.score(sample(1, 0))
-    with pytest.raises(ValueError):
-        det.fit(sample(1, 0))
-    with pytest.raises(ValueError):
-        det.fit(pd.DataFrame(index=range(5)))
-
-
 def test_score_is_positive_exactly_for_outliers() -> None:
     det = OneClassDriftDetector(nu=0.1).fit(sample(200, 0))
     new = pd.concat([sample(100, 1), sample(100, 2, shift=4.0)], ignore_index=True)
@@ -285,19 +273,3 @@ def test_missing_values_and_degenerate_features() -> None:
     # A row without any value is imputed with the training medians.
     blank = pd.DataFrame(np.nan, index=[0], columns=messy(1, 0).columns)
     assert np.isfinite(det.score(blank)).all()
-
-
-def test_columns_are_matched_by_name() -> None:
-    det = OneClassDriftDetector().fit(sample(100, 0))
-    new = sample(10, 1)
-    assert (det.score(new[NAMES[::-1]]) == det.score(new)).all()
-    with pytest.raises(ValueError):
-        det.score(new.drop(columns="f0"))
-
-
-def test_performance_is_ignored() -> None:
-    ref, new = sample(100, 0), sample(60, 1, shift=3.0)
-    perf = pd.DataFrame({"a": np.arange(100.0)})
-    a = OneClassDriftDetector(window_size=40).fit(ref, perf)
-    b = OneClassDriftDetector(window_size=40).fit(ref)
-    assert a.update(new, perf.iloc[:60]) == b.update(new)

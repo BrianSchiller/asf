@@ -10,24 +10,17 @@ class RewardTransform:
     """
     Map an arm's observed performance to a reward (higher is better).
 
-    Parameters
-    ----------
-    kind : {"auto", "par", "log", "raw"}, default="auto"
-        * ``"log"``: ``-log10(PAR_k(runtime) + 1)``. Differences between
-          algorithms that both solve an instance stay visible (as in
-          Tornede et al.).
-        * ``"par"``: ``-PAR_k(runtime) / (k * cutoff)``, in ``[-1, 0]``.
-          Matches PAR-k scoring, but runs well below the cutoff all get a
-          reward close to 0, so the bandit mostly learns "solved or not".
-          Needs a finite cutoff.
-        * ``"unit"``: ``1 - log10(PAR_k + 1) / log10(k * cutoff + 1)``, the
-          log reward rescaled to ``[0, 1]`` (1 = instant, 0 = unsolved), for
-          Beta posteriors. Needs a finite cutoff.
-        * ``"solved"``: 1 if solved within the cutoff, else 0 (binary).
-        * ``"raw"``: the value itself when maximizing, its negation otherwise.
-        * ``"auto"``: ``"raw"`` when maximizing, ``"log"`` otherwise.
-    par_factor : float, default=10.0
-        Penalty factor ``k`` for unsolved runs.
+    ``kind`` (PAR-k with ``par_factor`` k; ``"par"`` and ``"unit"`` need a
+    finite cutoff):
+
+    * ``"log"``: ``-log10(PAR_k + 1)``; differences between solved runs stay
+      visible (as in Tornede et al.).
+    * ``"par"``: ``-PAR_k / (k * cutoff)`` in ``[-1, 0]``; mostly "solved or
+      not", since fast runs all get almost 0.
+    * ``"unit"``: the log reward rescaled to ``[0, 1]``, for Beta posteriors.
+    * ``"solved"``: 1 if solved, else 0.
+    * ``"raw"``: the value when maximizing, its negation otherwise.
+    * ``"auto"``: ``"raw"`` when maximizing, ``"log"`` otherwise.
     """
 
     KINDS = ("auto", "par", "log", "unit", "solved", "raw")
@@ -46,23 +39,8 @@ class RewardTransform:
 
     def solved_reward(self, runtime: float, cutoff: float) -> float:
         """
-        Reward of a run that solved the instance in exactly ``runtime``.
-
-        Used as the bound when imputing censored runs: a run stopped at its
-        budget would have earned at most the reward of solving at the budget.
-        Only for the runtime rewards ``"log"`` and ``"par"``.
-
-        Parameters
-        ----------
-        runtime : float
-            The runtime (e.g. the budget a censored run was stopped at).
-        cutoff : float
-            The scenario cutoff (scales the ``"par"`` reward).
-
-        Returns
-        -------
-        float
-            The reward, without any penalty.
+        Reward of solving in exactly ``runtime``, without penalty (``"log"``
+        and ``"par"`` only): the bound for imputing a censored run.
         """
         kind = self.resolve(cutoff, maximize=False)
         if kind == "log":
@@ -77,27 +55,9 @@ class RewardTransform:
         self, reward: float, cutoff: float, maximize: bool
     ) -> float | None:
         """
-        Turn a reward back into a performance value (the inverse transform).
-
-        Used for ``PredictionRecord.predicted_runtime``: applied to an arm's
-        expected reward it gives the predicted PAR-k value on the raw scale
-        (unsolved runs were learnt with their penalty). For the ``"log"`` and
-        ``"unit"`` rewards this is a geometric rather than an arithmetic mean.
-
-        Parameters
-        ----------
-        reward : float
-            A reward, e.g. the posterior mean of an arm.
-        cutoff : float
-            The scenario cutoff (needed for ``"par"`` and ``"unit"``).
-        maximize : bool
-            Whether the scenario maximizes a quality score.
-
-        Returns
-        -------
-        float or None
-            The performance (runtimes are at least 0); ``None`` if the reward
-            cannot be inverted (``"solved"``, or no finite cutoff).
+        Inverse transform, e.g. an arm's mean reward -> predicted PAR-k (a
+        geometric mean for ``"log"``/``"unit"``). ``None`` if not invertible
+        (``"solved"``, or no finite cutoff).
         """
         kind = self.resolve(cutoff, maximize)
         if kind == "raw":
@@ -133,20 +93,17 @@ class RewardTransform:
                 "(pass budget=<cutoff> to the selector for the warm start)."
             )
 
-        def penalised(algo: str, value: float) -> float:
-            unsolved = algo in censored or value >= cutoff
-            return self.par_factor * cutoff if unsolved else float(value)
-
+        worst = self.par_factor * cutoff
         out: dict[str, float] = {}
         for algo, value in runtimes.items():
-            p = penalised(algo, value)
+            solved = algo not in censored and value < cutoff
+            par = float(value) if solved else worst
             if kind == "solved":
-                out[algo] = 0.0 if algo in censored or value >= cutoff else 1.0
+                out[algo] = float(solved)
             elif kind == "par":
-                out[algo] = -p / (self.par_factor * cutoff)
+                out[algo] = -par / worst
             elif kind == "unit":
-                worst = math.log10(self.par_factor * cutoff + 1.0)
-                out[algo] = 1.0 - math.log10(p + 1.0) / worst
+                out[algo] = 1.0 - math.log10(par + 1.0) / math.log10(worst + 1.0)
             else:
-                out[algo] = -math.log10(p + 1.0)
+                out[algo] = -math.log10(par + 1.0)
         return out

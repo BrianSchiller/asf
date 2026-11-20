@@ -1,25 +1,10 @@
 """
 Drift responses: HOW a selector reacts when its detector signals drift.
 
-A response is called from :meth:`AbstractOnlineSelector.on_drift` and uses
-exactly one capability hook of the selector (``REQUIRES``). Selectors that do
-not implement the hook cannot be combined with the response; this is checked
-when the selector is fitted.
-
-==============================  ======================  =====================
-Response                        Selector hook           Implemented by (F1)
-==============================  ======================  =====================
-:class:`RereferenceResponse`    -- (none)               every selector
-:class:`RetrainResponse`        ``_retrain``            OnlinePairwiseSelector
-:class:`ResetResponse`          ``_reset_model``        bandits (``reset_arms``)
-:class:`ReweightResponse`       ``_discount_history``   -- (planned)
-:class:`RaiseExplorationResponse` ``_boost_exploration``  -- (planned)
-==============================  ======================  =====================
-
-Retrain and reset rebuild the selector's model, so the selector re-references
-its detector afterwards (refit on the current buffer, or reset for scalar
-detectors). Reweighting and raising exploration keep the model and do not.
-:class:`RereferenceResponse` only re-references the detector.
+Each response calls one selector hook (``REQUIRES``); fitting a selector
+that lacks it raises. After a retrain or reset the selector re-references
+its detector. ``ReweightResponse`` and ``RaiseExplorationResponse`` are not
+implemented by any selector yet.
 """
 
 from __future__ import annotations
@@ -34,17 +19,7 @@ if TYPE_CHECKING:
 
 
 class AbstractDriftResponse(ABC):
-    """
-    One way of reacting to a drift signal.
-
-    Attributes
-    ----------
-    NAME : str
-        Short label logged in the ``response`` column of the results.
-    REQUIRES : str
-        Name of the :class:`~asf.online.base.AbstractOnlineSelector` hook the
-        response calls.
-    """
+    """One way of reacting to drift; ``NAME`` is logged in the results."""
 
     NAME: ClassVar[str]
     REQUIRES: ClassVar[str]
@@ -56,13 +31,10 @@ class AbstractDriftResponse(ABC):
 
 class RereferenceResponse(AbstractDriftResponse):
     """
-    Only re-reference the detector on the current buffer; keep the model.
+    Only re-reference the detector on the buffer; keep the model.
 
-    Without it, a detector that is never re-referenced keeps comparing new
-    data with its first reference and signals again and again after a
-    change. Use it when the reaction to drift lies elsewhere (e.g. in
-    :class:`~asf.online.gate.ProbeAllAfterDrift`). A feature detector's own
-    settings (e.g. ``reference_size``) decide how much of the buffer it uses.
+    Stops a detector from signalling the same change again and again when the
+    reaction lies elsewhere (e.g. :class:`~asf.online.gate.AfterDriftGate`).
     """
 
     NAME = "rereference"
@@ -94,15 +66,8 @@ class ResetResponse(AbstractDriftResponse):
 
 
 class ReweightResponse(AbstractDriftResponse):
-    """
-    Down-weight everything observed before the drift.
-
-    Parameters
-    ----------
-    factor : float
-        Multiplier in ``[0, 1]`` applied to the weight of all past
-        observations (0 = forget, 1 = no change).
-    """
+    """Multiply the weight of everything seen before the drift by ``factor``
+    in ``[0, 1]`` (0 = forget, 1 = no change)."""
 
     NAME = "reweight"
     REQUIRES = "_discount_history"
@@ -118,16 +83,9 @@ class ReweightResponse(AbstractDriftResponse):
 
 class RaiseExplorationResponse(AbstractDriftResponse):
     """
-    Temporarily explore more (e.g. widen confidence bounds, lower a gate's
-    threshold).
-
-    Parameters
-    ----------
-    factor : float
-        Selector-defined strength of the boost (``> 0``; 1 = no change).
-    steps : int or None
-        Number of instances the boost lasts; ``None`` = until the next drift
-        response.
+    Explore more for ``steps`` instances (``None`` = until the next drift),
+    e.g. wider confidence bounds; ``factor > 0`` is the selector-defined
+    strength (1 = no change).
     """
 
     NAME = "raise_exploration"

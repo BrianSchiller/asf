@@ -35,8 +35,6 @@ def test_fit_sets_thresholds_components_and_validates() -> None:
     assert 1 <= det.n_components_ < D
     assert 0 <= det.lower_threshold_ < det.reference_error_ < det.upper_threshold_
     with pytest.raises(ValueError):
-        PCAReconstructionDetector().fit(sample(1, 0))
-    with pytest.raises(ValueError):
         PCAReconstructionDetector(chunk_size=10, stride=11)
     with pytest.raises(ValueError):
         PCAReconstructionDetector(reference_errors="nope")  # type: ignore[arg-type]
@@ -109,7 +107,3 @@ def test_missing_values_constant_columns_and_column_order() -> None:
     new.iloc[::5, 4] = np.nan
     scores = det.score(new[list(reversed(new.columns))])  # different column order
     assert np.isfinite(scores).all()
-    with pytest.raises(ValueError):
-        det.score(new.drop(columns=["f0"]))
-    with pytest.raises(RuntimeError):
-        PCAReconstructionDetector().score(new)

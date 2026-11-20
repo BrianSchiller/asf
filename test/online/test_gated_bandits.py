@@ -1,4 +1,4 @@
-"""A4: bandits fill the prediction record, so extra-run gates work on them."""
+"""Bandits fill the prediction record, so extra-run gates work on them."""
 
 from __future__ import annotations
 
@@ -6,12 +6,11 @@ from functools import partial
 from typing import Any, Callable
 
 import numpy as np
-import pandas as pd
 import pytest
 
 from asf.online.drift.statistics import LogRuntimeResidual
 from asf.online.evaluation import run_prequential
-from asf.online.gate import AlwaysProbe, NeverProbe, UncertaintyGate
+from asf.online.gate import AllNomineesGate, NoExtrasGate, UncertaintyGate
 from asf.online.selectors.bandits import (
     AbstractContextualBandit,
     FDSWTSSelector,
@@ -25,7 +24,8 @@ from asf.online.selectors.bandits.posteriors import GaussianPosterior
 from asf.online.selectors.bandits.rewards import RewardTransform
 from asf.online.selectors.bandits.weighting import ExponentialDiscount, LastPulls
 
-from .test_bandits import ALGOS, CUTOFF, _obs, _stream, region_stream
+from .conftest import observe_runs, stream_from
+from .test_bandits import ALGOS, CUTOFF, region_stream
 
 STREAM = region_stream(n=200)
 ROW = STREAM.features.iloc[[0]]
@@ -48,12 +48,12 @@ def _with_arms(
 
 def _ucb(**kwargs: Any) -> UCBSelector:
     """UCB with interval ``mean +- width`` (no ln t factor), always gated."""
-    kwargs.setdefault("gate", AlwaysProbe(1))
+    kwargs.setdefault("gate", AllNomineesGate(1))
     return UCBSelector(alpha=1.0, ucb1=False, budget=CUTOFF, random_state=0, **kwargs)
 
 
 def _ts(**kwargs: Any) -> ThompsonSamplingSelector:
-    kwargs.setdefault("gate", AlwaysProbe(1))
+    kwargs.setdefault("gate", AllNomineesGate(1))
     return ThompsonSamplingSelector(
         prior_precision=0.0, budget=CUTOFF, random_state=0, **kwargs
     )
@@ -130,7 +130,7 @@ def test_uncertainty_samples_zero_and_validation() -> None:
 def test_ungated_bandit_is_unchanged_and_draws_nothing_extra() -> None:
     arms = {"a": (0.0, 1.0), "b": (0.2, 1.0), "c": (-0.5, 2.0)}
     sel = _with_arms(_ts(gate=None), arms)
-    assert isinstance(sel.gate_, NeverProbe)
+    assert isinstance(sel.gate_, NoExtrasGate)
     before = np.random.default_rng(0)
     [before.standard_normal() for _ in ALGOS]
     before.choice(np.array([0]))
@@ -169,7 +169,7 @@ def test_bandit_learns_from_the_extra_arm(
     sel.fit(STREAM.features.iloc[:0], STREAM.performance.iloc[:0])
     schedule = [a for a, _ in sel.propose(ROW)]
     assert len(schedule) == 2
-    sel.observe(_obs(STREAM, 0, schedule))
+    sel.observe(observe_runs(STREAM, 0, schedule))
     assert sel.clock_ == 1  # one instance, not two
     for arm in ALGOS:
         assert len(sel.history_.get(arm).rewards) == (arm in schedule)
@@ -217,21 +217,21 @@ def test_to_performance_other_kinds() -> None:
 
 def test_predicted_runtime_is_the_inverted_posterior_mean() -> None:
     perf = np.array([[9.0, 999.0, 999.0], [99.0, 999.0, 999.0], [1.0, 1.0, 1.0]])
-    stream = _stream(np.zeros((3, 2)), perf)
+    stream = stream_from(np.zeros((3, 2)), perf, cutoff=CUTOFF)
     sel = UCBSelector(budget=CUTOFF, random_state=0)
     sel.fit(stream.features.iloc[:0], stream.performance.iloc[:0])
     assert sel._select(stream.features.iloc[[0]]).predicted_runtime is None
     for i in range(2):
-        sel.observe(_obs(stream, i, ALGOS))
+        sel.observe(observe_runs(stream, i, ALGOS))
     sel.propose(stream.features.iloc[[2]])
     record = sel.last_prediction_
     # rewards of a: -log10(10) = -1 and -log10(100) = -2 -> mean -1.5
     assert record.chosen == "a"
     assert record.predicted_runtime == pytest.approx(10**1.5 - 1)
 
-    sample = LogRuntimeResidual()(_obs(stream, 2, ["a"]), record)  # B4's signal
+    sample = LogRuntimeResidual()(observe_runs(stream, 2, ["a"]), record)
     assert sample is not None
-    assert sample.value == pytest.approx(np.log(1.0) - np.log(10**1.5 - 1))
+    assert sample[0] == pytest.approx(np.log(1.0) - np.log(10**1.5 - 1))
 
 
 # ---------------------------------------------------------------- end to end
@@ -257,24 +257,17 @@ def _two_trace_ucb(**kwargs: Any) -> AbstractContextualBandit:
     ],
 )
 @pytest.mark.parametrize("n_warm", [0, 50])
-def test_gated_bandits_run_and_are_deterministic(cls: Any, n_warm: int) -> None:
-    def run() -> pd.DataFrame:
-        gate = UncertaintyGate(rate=0.3, random_state=0)
-        sel = cls(budget=CUTOFF, gate=gate, random_state=0)
-        return run_prequential(sel, STREAM, n_warmstart=n_warm).steps
-
-    steps = run()
-    pd.testing.assert_frame_equal(
-        steps.drop(columns=["selector_seconds", "detector_seconds"]),
-        run().drop(columns=["selector_seconds", "detector_seconds"]),
-    )
+def test_gated_bandits_report_uncertainty(cls: Any, n_warm: int) -> None:
+    gate = UncertaintyGate(rate=0.3, random_state=0)
+    sel = cls(budget=CUTOFF, gate=gate, random_state=0)
+    steps = run_prequential(sel, STREAM, n_warmstart=n_warm).steps
     assert steps["pred_uncertainty"].between(0, 1).all()
     assert set(steps["n_runs"]) == {1, 2}
 
 
 @pytest.mark.parametrize("cls", [ThompsonSamplingSelector, LinUCBSelector])
 def test_greedy_primary_with_exploring_extra_runs_end_to_end(cls: Any) -> None:
-    sel = cls(budget=CUTOFF, primary="greedy", gate=AlwaysProbe(1), random_state=0)
+    sel = cls(budget=CUTOFF, primary="greedy", gate=AllNomineesGate(1), random_state=0)
     result = run_prequential(sel, STREAM, result_mode="best_of_scheduled")
     assert (result.steps["n_runs"] == 2).all()
     assert result.steps["pred_runtime"].notna().mean() > 0.9

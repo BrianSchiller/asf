@@ -10,6 +10,7 @@ from asf.online.evaluation.metrics import (
 def test_penalised_runtime() -> None:
     assert penalised_runtime(5, 100) == 5
     assert penalised_runtime(101, 100) == 1000
+    assert penalised_runtime(100, 100) == 1000  # reaching the cutoff is a timeout
 
 
 def test_closed_gap() -> None:

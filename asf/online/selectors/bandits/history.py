@@ -11,19 +11,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ArmData:
-    """Stored observations of one arm (optionally restricted to one cell).
-
-    Attributes
-    ----------
-    steps : np.ndarray
-        Arrival clock of each observation, shape ``(n,)``.
-    Z : np.ndarray
-        Feature vectors, shape ``(n, d)``.
-    rewards : np.ndarray
-        Rewards, shape ``(n,)``.
-    weights : np.ndarray
-        Weights fixed at arrival (e.g. confidence scores), shape ``(n,)``.
-    """
+    """Stored observations of one arm (optionally of one cell): arrival
+    ``steps``, feature vectors ``Z``, ``rewards`` and arrival ``weights``."""
 
     steps: np.ndarray
     Z: np.ndarray
@@ -36,17 +25,8 @@ class ArmData:
 
 class BanditHistory:
     """
-    Stores ``(step, z, cell, reward, weight)`` per arm.
-
-    Parameters
-    ----------
-    arms : Sequence[str]
-        Arm names.
-    dim : int
-        Length of the feature vectors ``z``.
-    max_size : int or None, default=None
-        Keep at most this many observations per arm (oldest dropped first).
-        ``None`` keeps everything.
+    Stores ``(step, z, cell, reward, weight)`` per arm, at most ``max_size``
+    per arm (oldest dropped first; ``None`` = all).
     """
 
     def __init__(

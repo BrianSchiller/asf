@@ -1,6 +1,8 @@
-"""Tests for the gate criteria and rate-based thresholds (A3)."""
+"""Extra-run gates: inside selectors, criteria and the rate rule."""
 
 from __future__ import annotations
+
+import math
 
 from typing import Any, Callable, Mapping
 
@@ -14,21 +16,30 @@ from asf.online.drift import AbstractDriftDetector, DriftSignal
 from asf.online.evaluation import describe, run_prequential
 from asf.online.gate import (
     AbstractExtraRunGate,
-    AlwaysProbe,
-    GateContext,
-    NeverProbe,
-    ScoreGate,
-    UncertaintyGate,
-)
-from asf.online.gate_criteria import (
+    AllNomineesGate,
     CloseCallGate,
+    GateContext,
+    NoExtrasGate,
+    ScoreGate,
     TimeoutRiskGate,
+    UncertaintyGate,
     UnfamiliarityGate,
 )
 from asf.online.prediction import PredictionRecord
-from asf.online.selectors import FrugalPairwiseSelector
+from asf.online.selectors import (
+    FrugalPairwiseSelector,
+    OnlinePairwiseSelector,
+    ThompsonSamplingSelector,
+)
 
-from .conftest import make_stream
+from .conftest import (
+    CUTOFF,
+    FixedGate,
+    PredictingSelector,
+    ScriptedDetector,
+    make_stream,
+    three_algo_stream,
+)
 
 ALGOS = ("a", "b", "c")
 _FEATURES = pd.DataFrame({"f0": [0.0]}, index=pd.Index(["x"]))
@@ -51,7 +62,6 @@ def _ctx(
     )
     return GateContext(
         prediction=record,
-        candidates=candidates,
         algorithms=ALGOS,
         features=_FEATURES,
         step=0,
@@ -86,44 +96,95 @@ def _decisions(gate: ScoreGate, scores: list[float | None]) -> np.ndarray:
     return np.array([_fires(gate, s) for s in scores])
 
 
+# ---------------------------------------------------------------- gates
+def test_default_gates_and_no_extras_gate_on_rook() -> None:
+    assert isinstance(OnlinePairwiseSelector().gate_, AllNomineesGate)
+    stream = three_algo_stream()
+    sel = OnlinePairwiseSelector(n_additional=2, reference_period=10, random_state=0)
+    assert (run_prequential(sel, stream).steps["n_runs"] == 3).all()
+    sel = OnlinePairwiseSelector(
+        reference_period=10, gate=NoExtrasGate(), random_state=0
+    )
+    steps = run_prequential(sel, stream).steps
+    assert (steps["n_runs"] == 1).all()
+    assert (steps["extras"] == "[]").all()
+
+
+def test_gate_can_add_extras_to_a_bandit_and_answers_are_cleaned() -> None:
+    gate = FixedGate(["c", "c", "a", "b"])  # duplicates and possibly primary
+    sel = ThompsonSamplingSelector(budget=CUTOFF, gate=gate, random_state=0)
+    steps = run_prequential(sel, three_algo_stream(), n_warmstart=5).steps
+    assert (steps["n_runs"] == 3).all()
+    ctx = gate.contexts[3]
+    alternatives = ctx.ranked_alternatives()
+    assert ctx.step == 3 and ctx.candidates == alternatives
+    assert sorted(alternatives + (ctx.prediction.chosen,)) == ["a", "b", "c"]
+    scores = ctx.prediction.scores
+    assert scores is not None
+    assert [scores[a] for a in alternatives] == sorted(
+        (scores[a] for a in alternatives), reverse=True
+    )
+
+
+def test_gate_with_unknown_algorithm_fails() -> None:
+    sel = ThompsonSamplingSelector(budget=CUTOFF, gate=FixedGate(["nope"]))
+    with pytest.raises(ValueError, match="unknown algorithms"):
+        run_prequential(sel, three_algo_stream(), n_warmstart=5)
+
+
+def test_extras_use_the_primary_budget() -> None:
+    class _Budgeted(PredictingSelector):
+        def _select(self, features: pd.DataFrame) -> PredictionRecord:
+            return PredictionRecord(chosen="a", budget=7.0, candidates=("b",))
+
+    sel = _Budgeted()
+    sel.fit(make_stream().features.iloc[:5], make_stream().performance.iloc[:5])
+    assert sel.propose(make_stream().features.iloc[[6]]) == [("a", 7.0), ("b", 7.0)]
+
+
+def test_gate_receives_instance_score_and_drift_context() -> None:
+    gate = FixedGate([], needs_score=True)
+    detector = ScriptedDetector(drift_at={3})
+    sel = ThompsonSamplingSelector(
+        budget=CUTOFF, gate=gate, detector=detector, random_state=0
+    )
+    steps = run_prequential(sel, make_stream(), n_warmstart=10).steps
+    assert gate.contexts[0].instance_score == 0.25
+    assert (steps["instance_score"] == 0.25).all()
+    assert gate.contexts[2].steps_since_drift is None
+    assert gate.contexts[3].steps_since_drift == 1  # drift on the 3rd update
+    assert gate.contexts[3].last_signal is not None
+
+
 # ------------------------------------------------------------ rate rule
 @pytest.mark.parametrize(
-    ("score", "u", "expected"),
+    ("q", "window", "score", "u", "expected"),
     [
-        # Window [1, 2, 3, 4], q = 0.5; rule: (greater + u * (equal + 1)) / 5 < q.
-        (5.0, 0.99, True),  # (0 + 0.99) / 5 = 0.198
-        (3.5, 0.99, True),  # (1 + 0.99) / 5 = 0.398
-        (2.5, 0.49, True),  # (2 + 0.49) / 5 = 0.498
-        (2.5, 0.50, False),  # (2 + 0.50) / 5 = 0.5, not below q
-        (1.5, 0.0, False),  # (3 + 0) / 5 = 0.6
-        (0.0, 0.0, False),  # (4 + 0) / 5 = 0.8
+        # Rule: (greater + u * (equal + 1)) / (len(window) + 1) < q.
+        (0.5, [1.0, 2.0, 3.0, 4.0], 5.0, 0.99, True),  # 0.99 / 5 = 0.198
+        (0.5, [1.0, 2.0, 3.0, 4.0], 3.5, 0.99, True),  # 1.99 / 5 = 0.398
+        (0.5, [1.0, 2.0, 3.0, 4.0], 2.5, 0.49, True),  # 2.49 / 5 = 0.498
+        (0.5, [1.0, 2.0, 3.0, 4.0], 2.5, 0.50, False),  # 2.5 / 5, not below q
+        (0.5, [1.0, 2.0, 3.0, 4.0], 1.5, 0.0, False),  # 3 / 5
+        (0.5, [1.0, 2.0, 3.0, 4.0], 0.0, 0.0, False),  # 4 / 5
+        (0.5, [3.0] * 4, 3.0, 0.49, True),  # all tied: fires iff u < q
+        (0.5, [3.0] * 4, 3.0, 0.50, False),
+        (0.3, [1.0, 2.0], None, 0.29, True),  # no score: probability q
+        (0.3, [1.0, 2.0], None, 0.30, False),
+        (0.3, [1.0, 2.0], float("nan"), 0.29, True),  # NaN = no score
+        (0.3, [], 7.0, 0.29, True),  # first instance: probability q
+        (0.3, [], 7.0, 0.30, False),
     ],
 )
-def test_rate_rule_hand_cases(score: float, u: float, expected: bool) -> None:
-    gate = _rate_gate(0.5, [1.0, 2.0, 3.0, 4.0], u)
-    assert _fires(gate, score) is expected
-    assert gate.last_score_ == score
-
-
-@pytest.mark.parametrize(("u", "expected"), [(0.49, True), (0.5, False)])
-def test_rate_rule_breaks_ties_at_random(u: float, expected: bool) -> None:
-    # All five scores equal: (0 + u * 5) / 5 = u, so the gate fires iff u < q.
-    assert _fires(_rate_gate(0.5, [3.0] * 4, u), 3.0) is expected
-
-
-@pytest.mark.parametrize(("u", "expected"), [(0.29, True), (0.3, False)])
-def test_rate_rule_without_a_score_fires_with_probability_q(
-    u: float, expected: bool
+def test_rate_rule(
+    q: float, window: list[float], score: float | None, u: float, expected: bool
 ) -> None:
-    gate = _rate_gate(0.3, [1.0, 2.0], u)
-    assert _fires(gate, None) is expected
-    assert _fires(gate, float("nan")) is expected  # NaN = no score
-    assert list(gate._window) == [1.0, 2.0]  # unscored instances are not stored
-
-
-def test_first_instance_fires_with_probability_q() -> None:
-    assert _fires(_rate_gate(0.3, [], 0.29), 7.0)
-    assert not _fires(_rate_gate(0.3, [], 0.3), 7.0)
+    gate = _rate_gate(q, window, u)
+    assert _fires(gate, score) is expected
+    rated = score is not None and not math.isnan(score)
+    assert gate.last_score_ == (score if rated else None)
+    if not rated:
+        assert list(gate._window) == window  # unscored instances are not stored
 
 
 def test_rate_endpoints_always_and_never() -> None:
@@ -312,7 +373,7 @@ def test_close_call_gate_rejects_bad_arguments() -> None:
 
 def test_gates_are_described_for_result_files() -> None:
     desc = describe(CloseCallGate(rate=0.25, relative=True, random_state=3))
-    assert desc["class"] == "asf.online.gate_criteria.CloseCallGate"
+    assert desc["class"] == "asf.online.gate.CloseCallGate"
     assert desc["params"] == {
         "max_gap": None,
         "n": 1,
@@ -465,16 +526,8 @@ def _frugal_steps(gate: AbstractExtraRunGate) -> pd.DataFrame:
 
 def test_rate_one_is_always_two_and_rate_zero_is_never() -> None:
     always = _frugal_steps(UncertaintyGate(rate=1.0, random_state=0))
-    pd.testing.assert_frame_equal(always, _frugal_steps(AlwaysProbe(1)))
+    pd.testing.assert_frame_equal(always, _frugal_steps(AllNomineesGate(1)))
     assert (always["n_runs"] == 2).all()
     never = _frugal_steps(UncertaintyGate(rate=0.0, random_state=0))
-    pd.testing.assert_frame_equal(never, _frugal_steps(NeverProbe()))
+    pd.testing.assert_frame_equal(never, _frugal_steps(NoExtrasGate()))
     assert (never["n_runs"] == 1).all()
-
-
-def test_frugal_selector_with_a_rate() -> None:
-    steps = _frugal_steps(UncertaintyGate(rate=0.3, random_state=0))
-    assert (steps["n_runs"] > 1).mean() == pytest.approx(0.3, abs=0.15)  # 100 steps
-    pd.testing.assert_frame_equal(
-        steps, _frugal_steps(UncertaintyGate(rate=0.3, random_state=0))
-    )

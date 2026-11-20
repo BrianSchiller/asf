@@ -1,16 +1,8 @@
 """Confidence models: how much to trust an observation, judged by its features.
 
-A confidence model scores feature vectors with a weight in ``[0, 1]``: close
-to 1 for instances that look like the current distribution, close to 0 for
-outliers. The bandit uses it in one of two ways (or both):
-
-* fixed at arrival -- ``AbstractContextualBandit(confidence=model)`` scores
-  each instance once, when it is observed, and stores the weight;
-* re-estimated -- ``weighting=ConfidenceWeighting(model)`` re-scores the
-  whole history at every decision.
-
-:class:`GaussianConfidence` is a simple stand-in; a flow-based density model
-(FC-TS) implements the same three methods.
+A model scores feature vectors in ``[0, 1]`` (near 1 = like the current
+distribution). The bandit uses it fixed at arrival (``confidence=``) or
+re-estimated at every decision (``ConfidenceWeighting``).
 """
 
 from __future__ import annotations
@@ -38,16 +30,8 @@ class ConfidenceModel(ABC):
 
 class GaussianConfidence(ConfidenceModel):
     """
-    Diagonal Gaussian density of the recent feature distribution.
-
-    Running mean and variance with exponential forgetting; the score is
-    ``exp(-0.5 * mean_j((z_j - mu_j)^2 / var_j))``, i.e. 1 at the centre and
-    decreasing with the average squared z-score.
-
-    Parameters
-    ----------
-    forgetting : float, default=0.99
-        Weight kept by the old estimate per update (1.0 = no forgetting).
+    Diagonal Gaussian of the recent features (exponential ``forgetting``);
+    score ``exp(-0.5 * mean_j((z_j - mu_j)^2 / var_j))``, 1 at the centre.
     """
 
     def __init__(self, forgetting: float = 0.99) -> None:
