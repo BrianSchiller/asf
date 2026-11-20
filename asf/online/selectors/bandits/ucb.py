@@ -20,24 +20,9 @@ from asf.online.selectors.bandits.weighting import ExponentialDiscount, SlidingW
 
 class UCBSelector(AbstractContextualBandit):
     """
-    Context-free UCB (UCB1 by default) over algorithms.
-
-    Score ``mean + alpha * sqrt(noise_var / n) * sqrt(2 ln t)``. With the
-    defaults this is the classic UCB1 index; unplayed arms are tried first.
-
-    Parameters
-    ----------
-    alpha : float, default=1.0
-        Exploration strength.
-    ucb1 : bool, default=True
-        Use the ``sqrt(2 ln t)`` factor of UCB1.
-    prior_precision : float, default=0.0
-        Pseudo-count of the zero-mean prior (0 = none).
-    noise_var : float, default=1.0
-        Reward noise variance.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit` (e.g. ``weighting``,
-        ``partitioner``, ``budget``, ``random_state``).
+    Context-free UCB: ``mean + alpha * sqrt(noise_var / n) * sqrt(2 ln t)``,
+    with the defaults the classic UCB1 index (``ucb1=False`` drops the
+    ``ln t`` factor); unplayed arms are tried first.
     """
 
     def __init__(
@@ -60,21 +45,9 @@ class UCBSelector(AbstractContextualBandit):
 
 class LinUCBSelector(AbstractContextualBandit):
     """
-    LinUCB with disjoint linear models (Li et al., 2010).
-
-    Score ``x @ theta_a + alpha * sqrt(noise_var * x^T A_a^-1 x)`` with
+    LinUCB with disjoint linear models (Li et al., 2010):
+    ``x @ theta_a + alpha * sqrt(noise_var * x^T A_a^-1 x)`` with
     ``x = [standardised features, 1]``.
-
-    Parameters
-    ----------
-    alpha : float, default=1.0
-        Exploration strength.
-    prior_precision : float, default=1.0
-        Ridge regularisation ``lambda``.
-    noise_var : float, default=1.0
-        Reward noise variance.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
     """
 
     def __init__(
@@ -100,24 +73,11 @@ class DiscountedUCBSelector(UCBSelector):
     """
     Discounted UCB (D-UCB, Garivier & Moulines, 2011).
 
-    Index ``mu_hat + 2 B sqrt(xi ln n_t / N_t)`` with the discounted play count
-    ``N_t = sum_s gamma^(t-s) [arm played at s]``, the discounted mean
-    ``mu_hat`` and ``n_t = sum_arms N_t``. Unplayed arms are tried first.
-
-    Rewards default to the ``"unit"`` reward in ``[0, 1]`` (so ``B = 1``); pass
-    ``budget=<cutoff>``. The framework weights the newest observation by 1,
-    the paper by ``gamma``; this is corrected internally.
-
-    Parameters
-    ----------
-    gamma : float, default=0.99
-        Discount factor in ``(0, 1]``.
-    B : float, default=1.0
-        Upper bound on the rewards.
-    xi : float, default=0.6
-        Exploration constant.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
+    Index ``mu_hat + 2 B sqrt(xi ln n_t / N_t)`` with the discounted play
+    count ``N_t``, discounted mean ``mu_hat`` and ``n_t = sum_arms N_t``.
+    Rewards default to the ``"unit"`` reward in ``[0, 1]`` (``B = 1``; pass
+    ``budget=<cutoff>``). The paper weights the newest observation by
+    ``gamma``; this is corrected internally.
     """
 
     def __init__(
@@ -149,23 +109,9 @@ class SlidingWindowUCBSelector(UCBSelector):
     """
     Sliding-Window UCB (SW-UCB, Garivier & Moulines, 2011).
 
-    Index ``mu_hat + B sqrt(xi ln min(t, window) / N_t)`` with ``N_t`` and
-    ``mu_hat`` computed over the last ``window`` steps; ``t`` is the
-    (1-based) current round. Unplayed arms are tried first.
-
-    Rewards default to the ``"unit"`` reward in ``[0, 1]`` (so ``B = 1``); pass
-    ``budget=<cutoff>``.
-
-    Parameters
-    ----------
-    window : int, default=100
-        Window length ``tau`` in steps, shared by all arms.
-    B : float, default=1.0
-        Upper bound on the rewards.
-    xi : float, default=0.6
-        Exploration constant.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
+    Index ``mu_hat + B sqrt(xi ln min(t, window) / N_t)`` over the last
+    ``window`` steps. Rewards default to the ``"unit"`` reward in ``[0, 1]``
+    (``B = 1``; pass ``budget=<cutoff>``).
     """
 
     def __init__(

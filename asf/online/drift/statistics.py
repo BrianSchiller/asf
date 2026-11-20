@@ -24,23 +24,12 @@ DriftStatistic = Callable[
 
 class LogRuntimeResidual:
     """
-    ``log(observed) - log(predicted)`` runtime of the primary algorithm.
+    ``log(observed) - log(predicted)`` runtime of the primary algorithm
+    (positive = slower than predicted). Needs ``predicted_runtime``.
 
-    Positive values mean the algorithm was slower than predicted. If the
-    primary run was censored, the observed runtime is the budget, so the
-    value is a *lower bound* of the true residual.
-
-    Requires a selector that sets ``PredictionRecord.predicted_runtime``;
-    otherwise no value is produced. Intended for runtime minimisation.
-
-    Parameters
-    ----------
-    censored : {"emit", "skip"}, default="emit"
-        ``"emit"``: pass censored residuals on with ``censored=True``.
-        ``"skip"``: produce no value for censored runs.
-    floor : float, default=1e-6
-        Runtimes (observed and predicted) are clipped to at least ``floor``
-        before taking logs, so zero runtimes stay finite.
+    A censored run gives a lower bound, which is passed on
+    (``censored="emit"``) or dropped (``"skip"``). Runtimes are clipped to
+    ``floor`` before taking logs.
     """
 
     def __init__(

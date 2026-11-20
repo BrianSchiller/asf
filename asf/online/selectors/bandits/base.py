@@ -1,6 +1,6 @@
 """Composable (non-stationary, contextual) multi-armed bandit selector.
 
-Arms are algorithms. A bandit selector is assembled from independent parts::
+Arms are algorithms. A bandit is assembled from::
 
     context      features -> z (impute, standardise); x = [z, 1] or [1]
     posterior    per-arm Bayesian reward model     (posteriors.py)
@@ -11,25 +11,10 @@ Arms are algorithms. A bandit selector is assembled from independent parts::
     reward       observation -> reward             (rewards.py)
     imputation   censored run -> imputed reward    (asf/online/imputation.py)
 
-UCB, TS, LinUCB and LinTS (``ucb.py``, ``thompson.py``) are presets of this
-class. Non-stationary variants are obtained by passing a different weighting,
-e.g. ``LinTSSelector(weighting=ExponentialDiscount(0.99))``, or several
-weightings at once (``traces``), whose scores are combined per arm (f-dsw TS);
-new methods
-subclass this class and override one of the hooks listed in its docstring.
-
-Computation modes
------------------
-Each trace is computed in one of two modes:
-
-* incremental -- if the weighting is incremental (uniform / exponential
-  discount), every (cell, arm) keeps a posterior that is updated with each
-  observation and decayed once per step.
-* refit -- otherwise (sliding window, nearest neighbours, re-estimated
-  confidence weights), an arm's posterior is rebuilt from the weighted history
-  at every decision.
-
-Both modes give identical posteriors whenever both are applicable.
+Each trace is kept *incrementally* if its weighting allows it (uniform or
+exponential discount: update and decay running posteriors) and is *refitted*
+from the weighted history at every decision otherwise. Both give the same
+posteriors where both apply.
 """
 
 from __future__ import annotations
@@ -71,104 +56,55 @@ class AbstractContextualBandit(AbstractOnlineSelector):
     """
     Bandit selector over algorithms, assembled from pluggable components.
 
-    Without a ``gate`` it plays exactly one arm per step (the schedule
-    ``[(arm, 0.0)]``, i.e. run with the scenario cutoff). It learns from all
-    arms reported in the observation, so a gate can add extra runs.
+    It plays one arm per step unless a ``gate`` adds extra runs, and learns
+    from every arm reported back. In the record, ``candidates`` are the other
+    arms by policy score; ``uncertainty`` (only with a gate) is how likely
+    another arm is better: for TS the share of ``uncertainty_samples`` joint
+    draws the chosen arm does not win, for UCB the overlap (IoU) of the
+    intervals of the chosen arm and the first nominee (1 without data);
+    ``predicted_runtime`` is the expected reward turned back into performance.
 
-    Prediction record
-    -----------------
-    ``candidates``
-        All other arms by descending policy score (UCB index, Thompson
-        sample): the runner-up first.
-    ``uncertainty``
-        How likely another arm is better, in ``[0, 1]``. Only computed when a
-        gate is set. Thompson Sampling: the share of ``uncertainty_samples``
-        joint posterior draws in which the chosen arm is not the best (ties
-        share the win). UCB: the overlap of the confidence intervals
-        ``mean +- bonus`` of the chosen arm and the first nominee, as
-        intersection over union (1 if either arm has no data). ``None`` for
-        other policies.
-    ``predicted_runtime``
-        The chosen arm's expected reward turned back into a performance value
-        (:meth:`RewardTransform.to_performance`; first trace). ``None`` if
-        the arm has no data or the reward cannot be inverted.
-
-    Hooks for subclasses
-    --------------------
-    ``_feature_vector(features)``
-        Instance -> ``z`` (default: imputed, standardised features).
-    ``_rewards(observation)``
-        Observation -> reward per executed arm (censored runs are imputed
-        here if ``imputation`` is set).
-    ``_observation_weight(z, observation)``
-        Weight stored with an observation (default: confidence score or 1).
-    ``_posterior_for(arm, z, cell, trace)``
-        The posterior used to score ``arm`` in one trace.
-    ``_policy_time(z, cell)``
-        The time ``t`` the policy sees (e.g. a discounted play count).
-    ``reset_arms()``
-        Forget all observations. It is the bandits' ``_reset_model``, so
-        ``drift_response=ResetResponse()`` calls it when a detector fires.
+    Subclass hooks: ``_feature_vector``, ``_rewards``, ``_observation_weight``,
+    ``_posterior_for``, ``_policy_time``; ``reset_arms()`` is the
+    ``_reset_model`` used by ``ResetResponse``.
 
     Parameters
     ----------
     posterior : Callable[[int], Posterior]
-        Factory creating an empty posterior for an input dimension, e.g.
-        ``functools.partial(BayesianLinearRegression, prior_precision=1.0)``.
+        Factory of an empty posterior for an input dimension.
     policy : ExplorationPolicy
         ``UCBPolicy`` or ``ThompsonPolicy``.
     contextual : bool, default=True
-        Posterior input ``[z, 1]`` (contextual) or ``[1]`` (context-free).
-        Features are still used by weightings / partitioners either way.
+        Posterior input ``[z, 1]`` or ``[1]``; weightings and partitioners
+        see the features either way.
     weighting : Weighting or None, default=None
-        Weighting of past observations; ``None`` = ``Uniform()`` (stationary).
+        Which past observations count (``None`` = ``Uniform()``).
     traces : Mapping[str, Weighting] or None, default=None
-        Several named weightings instead of one, e.g. ``{"historic":
-        ExponentialDiscount(0.99), "hot": LastPulls(30)}``. Every trace has its
-        own posterior per arm; the policy scores each and ``aggregate``
-        combines the scores. Mutually exclusive with ``weighting``.
-    aggregate : {"mean", "min", "max"}, default="mean"
-        How the scores of several traces are combined (unused for one trace).
+        Several named weightings instead of one (each with its own posteriors);
+        their scores are combined by ``aggregate`` (f-dsw TS).
     partitioner : Partitioner or None, default=None
-        ``None`` = ``SinglePartition()`` (one model per arm).
+        ``None`` = one model per arm.
     confidence : ConfidenceModel or None, default=None
-        If given, each observation is weighted by its confidence score at
-        arrival (fixed afterwards). The model is fitted on the warm start and
-        updated with every streamed instance. Do not pass the same model
-        object to a ``ConfidenceWeighting`` as well (it would be updated twice).
+        Weights each observation by its confidence at arrival (do not share
+        the model with a ``ConfidenceWeighting``: it would update twice).
     reward : RewardTransform or None, default=None
-        ``None`` = ``RewardTransform("auto")`` (``-log10(PAR10 + 1)`` for
-        runtimes, the raw score when maximizing).
+        ``None`` = ``-log10(PAR10 + 1)`` for runtimes, the raw score when
+        maximizing.
     imputation : CensoredImputer or None, default=None
-        How censored runs are learnt from (Tornede et al., 2022). ``None``:
-        they get the PAR-k penalty of ``reward``. Otherwise the run's reward
-        is imputed below the reward of solving at its budget, from the arm's
-        posterior *before* the update (see
-        :mod:`asf.online.imputation`); :class:`~asf.online.imputation.DropCensored`
-        skips the update of that arm. Unsolved warm-start runs (runtime at or
-        above ``budget``) are treated as censored as well. Needs the
-        ``"log"`` or ``"par"`` reward; rules with ``PREDICTIVE = True`` need a
-        posterior with ``noise_var`` (Gaussian ones). With several traces or
-        cells, the first trace's posterior in the instance's cell is used.
-    standardize : bool, default=True
-        Standardise features with warm-start statistics.
+        Imputes censored rewards from the arm's posterior *before* the update
+        instead of the PAR-k penalty (``DropCensored`` skips the update).
+        Unsolved warm-start runs count as censored. Needs the ``"log"`` or
+        ``"par"`` reward; ``PREDICTIVE`` rules need a posterior with
+        ``noise_var``. Uses the first trace's posterior in the instance's cell.
     max_history : int or None, default=None
-        Observations kept per arm in refit mode (``None`` = all).
+        Observations kept per arm in refit mode.
     primary : {"policy", "greedy"}, default="policy"
-        ``"policy"``: the primary run is the policy's arm (standard bandit).
-        ``"greedy"``: the primary run is the arm with the best posterior mean
-        (arms without data first) and exploration is left to the extra runs:
-        the nominees are still ordered by the policy score, so the first
-        extra is the arm the policy would have played (or its runner-up if
-        that is the greedy arm). ``scores`` then holds the posterior means.
-        Without a gate this never explores.
-    uncertainty_samples : int, default=32
-        Posterior draws per arm for the Thompson ``uncertainty`` (0 = none).
-        Drawn only when a gate is set, in one vectorised call per arm.
+        ``"greedy"`` plays the best posterior mean and leaves exploration to
+        the extra runs (nominees stay ordered by policy score; ``scores`` hold
+        the means). Without a gate it never explores.
     **kwargs : Any
         Forwarded to :class:`~asf.online.base.AbstractOnlineSelector`
-        (e.g. ``budget`` -- the cutoff used to score the warm start --,
-        ``maximize``, ``random_state``).
+        (``budget`` is the cutoff used to score the warm start).
     """
 
     def __init__(
@@ -414,11 +350,10 @@ class AbstractContextualBandit(AbstractOnlineSelector):
         """
         Rewards with censored runs imputed (Tornede et al., Alg. 1 l. 17-20).
 
-        A run is censored if it is marked so or its runtime reached the
-        cutoff. Its true reward is at most ``bound = solved_reward(min(runtime,
-        cutoff))``. The imputation rule works on the negated reward (so the
-        true value is ``>= -bound``) with the belief ``N(-mean, sd^2)`` of the
-        arm's current posterior at ``z``. A ``NaN`` from the rule drops the arm.
+        A run is censored if marked so or its runtime reached the cutoff; its
+        true reward is at most ``solved_reward(min(runtime, cutoff))``. The
+        rule works on the negated reward with the belief ``N(-mean, sd^2)``
+        of the arm's posterior at ``z``; ``NaN`` drops the arm.
         """
         assert self.imputation is not None
         unsolved = [

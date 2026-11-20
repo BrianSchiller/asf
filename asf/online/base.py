@@ -1,16 +1,9 @@
 """
 Core contract for online algorithm selection.
 
-An online selector is driven by an evaluation loop (or a real deployment) in two
-steps per incoming instance:
-
-1. ``propose(features)`` -> which algorithm(s) to run, as an ASlib-style schedule.
-2. ``observe(observation)`` -> the runtimes of the algorithm(s) that were
-   actually executed. The selector may update itself (retrain, update bandit
-   statistics, ...) in response.
-
-Only the algorithms that were run are reported back, so the performance
-information a selector accumulates is *partially observed*.
+Per instance, ``propose(features)`` returns an ASlib-style schedule and
+``observe(observation)`` reports the runtimes of the algorithms that ran
+(only those, so the selector's data is partially observed).
 
 Inside ``propose`` the base class runs::
 
@@ -56,21 +49,9 @@ from asf.selectors.abstract_selector import AbstractSelector
 @dataclass(frozen=True)
 class Observation:
     """
-    Feedback for one instance after the proposed algorithms were executed.
-
-    Attributes
-    ----------
-    instance_id : Any
-        Identifier of the instance (index label of its feature row).
-    features : pd.DataFrame
-        The single-row feature frame the selector was asked about.
-    runtimes : Mapping[str, float]
-        Observed runtime per *executed* algorithm. For censored runs this is the
-        budget the run was stopped at.
-    censored : frozenset[str]
-        Names of executed algorithms whose run was stopped before solving.
-    cutoff : float
-        The global cutoff of the scenario (used e.g. for PAR scoring).
+    Feedback for one instance: the runtime of every *executed* algorithm
+    (for ``censored`` runs the budget they were stopped at) and the
+    scenario ``cutoff``.
     """
 
     instance_id: Any
@@ -85,23 +66,10 @@ class StepTrace:
     """
     Bookkeeping of one instance, read by the evaluator after ``observe``.
 
-    Attributes
-    ----------
-    step : int
-        0-based index of the instance in the stream.
-    prediction : PredictionRecord or None
-        The record of ``propose`` (``None`` if ``observe`` was called without).
-    instance_score : float or None
-        Detector score passed to the gate, if one was computed.
-    signal : DriftSignal or None
-        Detector output for this instance (``None`` = detector not run).
-    drift_statistic : float or None
-        Value fed to a scalar detector, if any.
-    responses : list[str]
-        ``NAME`` of every drift response executed for this instance.
-    detector_seconds : float
-        Wall-clock time spent in detector calls (scoring, updating, fitting,
-        re-referencing) during ``propose`` and ``observe`` of this instance.
+    ``signal`` is ``None`` if the detector did not run, ``drift_statistic``
+    is the value fed to a scalar detector, ``responses`` the ``NAME`` of each
+    drift response executed and ``detector_seconds`` the time spent in
+    detector calls during ``propose`` and ``observe``.
     """
 
     step: int
@@ -120,87 +88,52 @@ class AbstractOnlineSelector(AbstractSelector):
     """
     Base class for selectors that keep learning from the instance stream.
 
-    It extends :class:`~asf.selectors.abstract_selector.AbstractSelector`, so a
-    warm start works through the usual ``fit(features, performance)`` and
-    the selector can be used with existing ASF tooling. Subclasses implement:
-
-    * ``_fit_initial``: build the initial model from the warm-start data.
-    * ``_select``: return a :class:`~asf.online.prediction.PredictionRecord`
-      for ONE instance (chosen algorithm, budget, predictions, nominees for
-      extra runs).
-    * ``_observe``: learn from feedback (update statistics, ...).
-
-    and, optionally, the capability hooks used by drift responses:
-    ``_retrain``, ``_reset_model``, ``_discount_history``,
+    A warm start goes through the usual ``fit(features, performance)``.
+    Subclasses implement ``_fit_initial`` (warm-start model), ``_select`` (a
+    :class:`~asf.online.prediction.PredictionRecord` for one instance) and
+    ``_observe`` (learn from feedback), plus optionally the hooks drift
+    responses need: ``_retrain``, ``_reset_model``, ``_discount_history``,
     ``_boost_exploration``.
 
-    The base class owns the components that are shared by all selectors:
-
-    * the **extra-run gate** (``gate``) deciding which nominees actually run,
-    * the **drift detector** (``detector``), feature-based or scalar-stream
-      (the latter with a ``drift_statistic``),
-    * the **drift responses** (``drift_response``) run by :meth:`on_drift`,
-    * schedule-based **retraining** (``retrain_every``).
-
-    Bookkeeping that the evaluation loop reads:
-
-    * ``last_prediction_`` / ``last_trace_``: what happened on the last
-      instance.
-    * ``retrain_steps`` / ``retrain_seconds``: when and how long we retrained.
-    * ``drift_steps``: steps at which the detector signalled drift.
-    * ``init_params_``: the constructor arguments (captured automatically).
-
-    Notes
-    -----
-    Schedule convention: the first tuple of the schedule is the *primary*
-    choice. Further tuples are *extra* runs for information gathering; they
-    get the primary run's budget. A budget of ``None`` or ``<= 0`` means "use
-    the scenario cutoff".
+    The schedule's first entry is the primary run, the others are extra runs
+    with the same budget (``None`` or ``<= 0`` = the scenario cutoff).
+    The evaluator reads ``last_trace_``, ``retrain_steps``,
+    ``retrain_seconds`` and ``drift_steps``; ``init_params_`` holds the
+    constructor arguments (captured automatically, for provenance).
 
     Parameters
     ----------
     window_size : int or None, default=200
-        Size of the sliding window held in the observation buffer (``None`` =
-        keep the full history).
+        Instances kept in the observation buffer (``None`` = all).
     gate : AbstractExtraRunGate or None, default=None
-        Extra-run gate; ``None`` uses :meth:`_default_gate`, which runs all of
-        the selector's nominees (so every selector keeps its built-in
-        behaviour).
-    detector : AbstractDriftDetector, AbstractScalarDriftDetector or None, default=None
-        Drift detector. Feature-based detectors are fitted on the buffer once
-        ``detector_reference_size`` instances have been seen (or right after
-        a warm start); scalar detectors need ``drift_statistic``.
+        Decides which nominees run; ``None`` = :meth:`_default_gate`.
+    detector : AbstractDriftDetector, AbstractScalarDriftDetector or None
+        Feature detectors are fitted on the buffer after the warm start or
+        after ``detector_reference_size`` instances; scalar detectors need a
+        ``drift_statistic``.
     drift_statistic : DriftStatistic or None, default=None
-        Callable turning ``(observation, prediction)`` into the
-        ``(value, censored)`` pair a scalar detector consumes (``None`` = no
-        value for this instance). Required for, and only allowed with, scalar
-        detectors.
-    drift_response : AbstractDriftResponse, sequence of them, or None, default=None
-        Responses executed, in order, when the detector signals drift. ``None``
-        means no response (the signal is only recorded), unless a subclass
-        sets a default.
+        ``(observation, prediction) -> (value, censored) | None`` for a scalar
+        detector (required with one, forbidden otherwise).
+    drift_response : AbstractDriftResponse, sequence of them, or None
+        Run in order when the detector signals drift (``None``: only record).
     retrain_every : int or None, default=None
-        Retrain after every ``retrain_every`` stream instances (warm start not
-        counted), independently of drift responses. Requires a selector
-        implementing ``_retrain``.
+        Retrain after every ``retrain_every`` stream instances (warm start
+        not counted), independently of drift. Needs ``_retrain``.
     detector_reference_size : int or None, default=None
-        Number of instances (warm start included) after which a feature
-        detector is fitted on the buffer. ``None``: fit right after the warm
-        start; then a cold start with a feature detector is an error.
+        Instances (warm start included) a feature detector is fitted on;
+        ``None`` = the warm start (a cold start then raises).
     **kwargs : Any
         Forwarded to :class:`~asf.selectors.abstract_selector.AbstractSelector`.
     """
 
-    #: How the evaluator scores a schedule by default: ``"primary"`` (the user
-    #: gets the first algorithm's result) or ``"best_of_scheduled"`` (the user
-    #: gets the best result among all scheduled algorithms, as with parallel runs).
+    #: Default scoring: the first algorithm's result (``"primary"``) or the
+    #: best of all scheduled ones (``"best_of_scheduled"``, parallel runs).
     RESULT_MODE: str = "primary"
 
     #: Whether the selector can start without warm-start data.
     SUPPORTS_COLD_START: bool = True
 
-    #: Subclasses that decide themselves when the detector is fitted (by
-    #: calling :meth:`fit_detector`) set this to ``True``.
+    #: ``True`` if the subclass calls :meth:`fit_detector` itself.
     MANAGES_DETECTOR_FIT: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -318,20 +251,8 @@ class AbstractOnlineSelector(AbstractSelector):
 
     # -------------------------------------------------------------- online
     def propose(self, features: pd.DataFrame) -> list[tuple[str, float]]:
-        """
-        Propose a schedule for a single incoming instance.
-
-        Parameters
-        ----------
-        features : pd.DataFrame
-            A frame with exactly one row (the instance).
-
-        Returns
-        -------
-        list[tuple[str, float]]
-            ``(algorithm, budget)`` tuples; the first is the primary choice,
-            the others are the extra runs chosen by the gate.
-        """
+        """``(algorithm, budget)`` schedule for one instance (one-row frame):
+        the primary choice, then the extras chosen by the gate."""
         self._check_fitted()
         if len(features) != 1:
             raise ValueError("propose() expects exactly one instance (one row).")
@@ -364,14 +285,7 @@ class AbstractOnlineSelector(AbstractSelector):
         return record.schedule
 
     def observe(self, observation: Observation) -> None:
-        """
-        Feed back the outcome of the executed schedule.
-
-        Parameters
-        ----------
-        observation : Observation
-            Runtimes (and censoring info) of the algorithms that were run.
-        """
+        """Learn from the executed schedule, then detect drift and react."""
         self._check_fitted()
         assert self.buffer is not None
         obs = replace(observation, features=self._augment(observation.features))
@@ -415,12 +329,7 @@ class AbstractOnlineSelector(AbstractSelector):
 
     # ------------------------------------------------------------ drift
     def on_drift(self, signal: DriftSignal) -> None:
-        """
-        React to a drift signal by running the configured drift responses.
-
-        Called by :meth:`observe` when the detector signals drift; may be
-        overridden for selector-specific reactions.
-        """
+        """Run the configured drift responses (override for custom reactions)."""
         for response in self.drift_responses_:
             response.respond(self, signal)
             if self._trace is not None:
@@ -517,8 +426,8 @@ class AbstractOnlineSelector(AbstractSelector):
         return AllNomineesGate()
 
     def _adaptation_active(self) -> bool:
-        """Whether detection, drift responses and the retrain policy run for
-        the current instance (e.g. ``False`` during a reference period)."""
+        """``False`` skips detection and retraining for this instance (e.g.
+        during a reference period)."""
         return True
 
     def _retrain(self) -> None:
@@ -530,8 +439,7 @@ class AbstractOnlineSelector(AbstractSelector):
         raise NotImplementedError
 
     def _discount_history(self, factor: float) -> None:
-        """Capability hook: multiply the weight of all past observations by
-        ``factor``."""
+        """Capability hook: multiply the weight of all past observations."""
         raise NotImplementedError
 
     def _boost_exploration(self, factor: float, steps: int | None) -> None:

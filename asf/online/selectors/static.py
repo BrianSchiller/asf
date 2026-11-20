@@ -13,19 +13,8 @@ from asf.selectors.abstract_selector import AbstractSelector
 
 class StaticOnlineSelector(AbstractOnlineSelector):
     """
-    Wrap any offline ASF selector so it can run in the online loop.
-
-    It is fitted once on the warm-start data and never updated (so it needs a
-    warm start, ``SUPPORTS_COLD_START = False``); it is the
-    "no adaptation" lower bound for drifting streams and doubles as an adapter
-    check for the online interface.
-
-    Parameters
-    ----------
-    selector : AbstractSelector
-        An unfitted offline selector with ``prediction_mode="aslib"``.
-    **kwargs : Any
-        Forwarded to :class:`AbstractOnlineSelector`.
+    An offline ASF selector (``prediction_mode="aslib"``) fitted once on the
+    warm start and never updated: the "no adaptation" baseline.
     """
 
     SUPPORTS_COLD_START = False

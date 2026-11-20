@@ -1,18 +1,11 @@
 """
-Interfaces for drift detectors.
+Interfaces for drift detectors, both reporting a :class:`DriftSignal` per update.
 
-Two kinds of detectors exist:
-
-* :class:`AbstractDriftDetector` -- *feature-based* (or performance-row-based):
-  sees each instance's features and partially observed performance, needs a
-  reference fit, may score single instances. Example: PCA reconstruction.
-* :class:`AbstractScalarDriftDetector` -- *scalar-stream*: sees one number
-  per instance (e.g. a prediction residual) and needs no reference data.
-  Examples: ADWIN, EDDM. An
-  :data:`~asf.online.drift.statistics.DriftStatistic` turns an
-  observation plus the selector's prediction into that number.
-
-Both report a :class:`DriftSignal` per update.
+* :class:`AbstractDriftDetector`: sees features (and the partially observed
+  performance row), needs a reference fit, may score single instances.
+* :class:`AbstractScalarDriftDetector`: sees one number per instance (e.g. a
+  prediction residual from a
+  :data:`~asf.online.drift.statistics.DriftStatistic`), no reference needed.
 """
 
 from __future__ import annotations
@@ -28,18 +21,7 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class DriftSignal:
-    """
-    Output of a drift detector for one update.
-
-    Attributes
-    ----------
-    drift : bool
-        ``True`` if the detector signals a drift at this step.
-    warning : bool, default=False
-        ``True`` if the detector is in a warning zone (if it has one).
-    score : float or None, default=None
-        Detector-specific drift statistic, useful for plotting.
-    """
+    """Output of one detector update; ``score`` is detector-specific (for plots)."""
 
     drift: bool
     warning: bool = False
@@ -48,23 +30,11 @@ class DriftSignal:
 
 class AbstractDriftDetector(ABC):
     """
-    Base class for feature-based drift detectors.
+    Base class for feature-based drift detectors (independent of any selector).
 
-    A detector is *independent of any selector*: it only sees features and,
-    for performance-aware detectors, the observed performance of the instance.
-    Retraining policies and selectors consume its signals.
-
-    Two usage levels are supported:
-
-    * stream level: :meth:`update` is called once per instance and returns a
-      :class:`DriftSignal` (when to reconfigure).
-    * instance level: :meth:`score` rates how unfamiliar instances are (optional;
-      used to weight instances or to trigger extra solver runs).
-
-    Attributes
-    ----------
-    feature_names_ : list[str]
-        Feature names seen in ``fit`` (empty before).
+    :meth:`update` reports drift once per instance; the optional :meth:`score`
+    rates how unfamiliar single instances are (e.g. for extra-run gates).
+    ``feature_names_`` holds the columns seen in ``fit``.
     """
 
     feature_names_: list[str] = []
@@ -85,12 +55,7 @@ class AbstractDriftDetector(ABC):
         features: pd.DataFrame,
         performance: pd.DataFrame | None = None,
     ) -> DriftSignal:
-        """
-        Consume one new instance (single-row frames) and report drift.
-
-        ``performance`` may be partially observed (NaN for non-executed
-        algorithms) and is ignored by feature-based detectors.
-        """
+        """Consume one instance (``performance`` may contain NaN for runs not made)."""
 
     def score(self, features: pd.DataFrame) -> np.ndarray:
         """Per-instance unfamiliarity score (higher = more drifted)."""
@@ -128,11 +93,8 @@ class AbstractDriftDetector(ABC):
     def _strided_checks(
         self, items: Iterable[Any], window: deque, check: Callable[[], bool]
     ) -> bool:
-        """
-        Append ``items`` to ``window`` one by one and run ``check`` every
-        ``self.stride`` items once the window is full; drift if any check
-        found drift.
-        """
+        """Append ``items`` to ``window``; once it is full, run ``check``
+        every ``self.stride`` items. Drift if any check found drift."""
         drift = False
         for item in items:
             window.append(item)
@@ -144,30 +106,11 @@ class AbstractDriftDetector(ABC):
 
 
 class AbstractScalarDriftDetector(ABC):
-    """
-    Base class for detectors on a stream of scalars (ADWIN, EDDM, ...).
-
-    The detector sees one value per instance, typically produced by an
-    :data:`~asf.online.drift.statistics.DriftStatistic` from the
-    observation and the selector's prediction. It needs no reference fit.
-    All window sizes, confidence levels and thresholds must be constructor
-    parameters.
-    """
+    """Base class for detectors on a stream of scalars (ADWIN, EDDM, ...)."""
 
     @abstractmethod
     def update(self, value: float, censored: bool = False) -> DriftSignal:
-        """
-        Consume one value and report drift.
-
-        Parameters
-        ----------
-        value : float
-            The statistic for the current instance.
-        censored : bool, default=False
-            ``True`` if ``value`` is only a bound (e.g. the run was stopped at
-            its budget, so the true runtime is at least the observed one).
-            Detectors that cannot use bounds may ignore such values.
-        """
+        """Consume one value; ``censored`` means it is only a lower bound."""
 
     @abstractmethod
     def reset(self) -> None:

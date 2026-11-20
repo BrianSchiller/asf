@@ -1,19 +1,16 @@
 """
 Turn static (ASlib-like) datasets into streams with covariate drift.
 
-Every builder only *orders* real instances; each instance keeps its own
-runtimes. So the relation from features to runtimes never changes: the
-streams have covariate drift (the feature distribution moves) and no concept
-drift.
+The builders only *order* real instances, each keeping its own runtimes, so
+the streams have covariate drift and no concept drift:
 
-* :func:`combine_scenarios` stacks datasets that share features and solvers
-  (e.g. SAT12-HAND, -INDU, -RAND) and labels each instance with its source.
-* :func:`grouped_stream` plays groups of instances one after another: sudden,
-  gradual and recurring drift (Rook et al.'s sudden and recurrent streams).
-* :func:`sorted_stream` sorts instances by any per-instance value (a feature,
-  a derived feature, solver runtimes as in Rook et al.'s smooth streams):
-  incremental drift over the whole stream.
-* :func:`cluster_labels` groups instances by their features, for
+* :func:`combine_scenarios` stacks datasets sharing features and solvers
+  (e.g. SAT12-HAND, -INDU, -RAND), labelling each instance with its source.
+* :func:`grouped_stream` plays groups one after another: sudden, gradual
+  and recurring drift (Rook et al.'s sudden and recurrent streams).
+* :func:`sorted_stream` sorts by a per-instance value: incremental drift
+  (with solver runtimes as key, Rook et al.'s smooth streams).
+* :func:`cluster_labels` groups instances by features, for
   :func:`grouped_stream` on any scenario.
 """
 
@@ -44,19 +41,9 @@ def combine_scenarios(
     scenarios: Mapping[str, Dataset],
 ) -> tuple[pd.DataFrame, pd.DataFrame, float, pd.Series]:
     """
-    Stack datasets that share features, algorithms and cutoff.
-
-    Parameters
-    ----------
-    scenarios : Mapping[str, tuple]
-        Name -> ``(features, performance, cutoff)``, e.g. the output of
-        :func:`~asf.online.streams.loaders.load_aslib_raw` per scenario.
-
-    Returns
-    -------
-    tuple
-        ``(features, performance, cutoff, labels)``; ``labels`` holds the
-        scenario name of every instance (index = instance ids).
+    Stack ``name -> (features, performance, cutoff)`` datasets that share
+    features, algorithms and cutoff. Returns ``(features, performance,
+    cutoff, labels)``, ``labels`` holding each instance's scenario name.
     """
     if not scenarios:
         raise ValueError("Need at least one scenario.")
@@ -98,45 +85,27 @@ def grouped_stream(
     """
     Play groups of instances one after another.
 
-    Each schedule entry is one segment of the stream. An entry is a group
-    label, or a tuple (or list) of labels for a segment that mixes groups.
-    Repeating an entry gives recurring drift, e.g.
-    ``["HAND", "INDU", "RAND", "HAND", "INDU", "RAND"]`` with
-    ``segment_length=None`` plays one half of every group, then the other.
-    No instance appears twice; instances are shuffled within a segment.
+    Each ``schedule`` entry is one segment: a group label, or a tuple of
+    labels for a mixed segment. Repeating entries gives recurring drift, e.g.
+    ``["HAND", "INDU", "RAND"] * 2`` with ``segment_length=None`` plays one
+    half of every group, then the other. No instance appears twice;
+    instances are shuffled within a segment; unlabelled or unscheduled
+    instances are not used.
 
     Parameters
     ----------
-    features, performance : pd.DataFrame
-        The dataset (same index).
-    cutoff : float
-        Scenario cutoff.
-    labels : pd.Series
-        Group of every instance (index = instance ids). Instances without a
-        label, or whose group is not scheduled, are not used.
-    schedule : sequence
-        Group label (or tuple of labels) per segment.
     segment_length : int, sequence of int or None, default=None
-        Instances per segment (one value for all, or one per segment), drawn
-        at random from what is left of the segment's groups. ``None`` uses
-        every instance: each group is split evenly over the segments it
-        appears in.
+        Instances per segment (one value or one per segment), drawn from what
+        is left of its groups. ``None``: each group is split evenly over the
+        segments it appears in.
     transition_length : int, default=0
-        0 = sudden changes. Otherwise the length of a gradual transition
-        centred on every boundary between different segments: inside it the
-        share of the new segment's instances rises linearly from 0 to 1. Must
-        be >= 2 and at most the shortest segment.
-    seed : int or None, default=None
-        Seed for sampling and shuffling.
-    name : str, default="grouped"
-        Stream name.
+        0 = sudden. Otherwise (``>= 2``, at most the shortest segment) a
+        gradual transition centred on each boundary, in which the share of
+        new instances rises linearly from 0 to 1.
 
-    Returns
-    -------
-    InstanceStream
-        ``drift_points`` are the boundaries between different segments (for
-        gradual transitions: the start of the transition, which is also in
-        ``transition_intervals``).
+    ``drift_points`` of the result are the segment boundaries (for gradual
+    transitions: the start of each transition, also in
+    ``transition_intervals``).
     """
     if not schedule:
         raise ValueError("schedule must not be empty.")
@@ -236,38 +205,14 @@ def sorted_stream(
     name: str = "sorted",
 ) -> InstanceStream:
     """
-    Order instances by a per-instance value: incremental drift.
+    Order instances by ``key``: incremental drift.
 
-    Examples of ``key``: a feature (``features["vars_clauses_ratio"]``), a
-    derived feature (``features.nclauses / features.nvars``), or solver
-    runtimes (``performance[["a", "b"]].max(axis=1)`` with ``ascending=False``
-    gives Rook et al.'s smooth streams).
-
-    Parameters
-    ----------
-    features, performance : pd.DataFrame
-        The dataset (same index).
-    cutoff : float
-        Scenario cutoff.
-    key : pd.Series
-        Sort value per instance (index = instance ids). Instances with a
-        missing value are dropped (with a warning).
-    ascending : bool, default=True
-        Sort direction.
-    jitter : float, default=0.0
-        Standard deviation of Gaussian noise added to the rank scaled to
-        [0, 1], so the order is only roughly sorted and differs per seed.
-        ``0`` sorts exactly (ties broken at random).
-    seed : int or None, default=None
-        Seed for tie-breaking and jitter.
-    name : str, default="sorted"
-        Stream name.
-
-    Returns
-    -------
-    InstanceStream
-        No drift points (the drift has no single onset); the whole stream is
-        one transition interval.
+    ``key`` can be a feature, a derived feature or solver runtimes
+    (``performance[["a", "b"]].max(axis=1)``, ``ascending=False``: Rook et
+    al.'s smooth streams). Instances without a key are dropped (with a
+    warning). ``jitter`` adds Gaussian noise to the [0, 1]-scaled rank, so the
+    order is only roughly sorted; ties are broken at random. The result has
+    no drift points; the whole stream is one transition interval.
     """
     if not jitter >= 0:
         raise ValueError("jitter must be >= 0.")
@@ -297,11 +242,8 @@ def cluster_labels(
     features: pd.DataFrame, n_clusters: int, seed: int | None = None
 ) -> pd.Series:
     """
-    Group instances by their features (KMeans), as labels for
+    KMeans labels on median-imputed, standardised features, for
     :func:`grouped_stream`.
-
-    Missing values are imputed with the column median and features are
-    standardised first, so no single feature dominates the distances.
     """
     from sklearn.cluster import KMeans
     from sklearn.impute import SimpleImputer

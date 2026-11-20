@@ -1,15 +1,11 @@
 """Turning instance features into the vectors a bandit works with.
 
-Two vectors are derived from every instance:
+* ``z``, the *feature vector* (imputed, standardised), is what similarity-
+  based components see (nearest neighbours, partitioners, confidence).
+* ``x``, the posterior *model input*: ``[z, 1]`` (contextual) or ``[1]``.
 
-* ``z`` -- the *feature vector*: NaNs imputed, features standardised. It is what
-  similarity-based components see (nearest-neighbour windows, partitioners,
-  confidence models).
-* ``x`` -- the *model input* of the arm posteriors: ``[z, 1]`` (features plus a
-  bias term) for contextual bandits, ``[1]`` for context-free ones.
-
-Keeping both apart lets a context-free posterior (plain TS) still use the
-features to decide *which* past observations are relevant (e.g. DTS-OC).
+Keeping them apart lets a context-free posterior still use the features to
+decide which past observations are relevant (e.g. DTS-OC).
 """
 
 from __future__ import annotations
@@ -20,13 +16,8 @@ import pandas as pd
 
 class ContextBuilder:
     """
-    Impute and standardise features with statistics of the warm-start data.
-
-    Parameters
-    ----------
-    standardize : bool, default=True
-        Scale every feature to zero mean and unit variance. Without warm-start
-        data (cold start) no statistics exist and features are only imputed.
+    Impute and standardise features with warm-start statistics (on a cold
+    start there are none, so features are only imputed with 0).
     """
 
     def __init__(self, standardize: bool = True) -> None:
@@ -67,10 +58,8 @@ class ContextBuilder:
 
 def model_input(z: np.ndarray, contextual: bool) -> np.ndarray:
     """
-    Map feature vectors ``z`` (shape ``(n, d)``) to posterior inputs ``x``.
-
-    Contextual: ``[z, 1]`` (shape ``(n, d + 1)``). Context-free: ``[1]``
-    (shape ``(n, 1)``), which turns a linear posterior into a plain mean.
+    Feature vectors ``z`` ``(n, d)`` -> posterior inputs ``[z, 1]``, or
+    ``[1]`` (context-free, turning a linear posterior into a plain mean).
     """
     z = np.atleast_2d(z)
     ones = np.ones((z.shape[0], 1))

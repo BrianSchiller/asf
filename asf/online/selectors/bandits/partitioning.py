@@ -1,12 +1,7 @@
-"""Partitioners: route an instance to its own group of arm models.
+"""Partitioners: split feature space into cells, each with its own arm models.
 
-A partitioner splits feature space into cells (clusters, tree leaves, ...).
-Every cell has its own posterior per arm, and only the cell's observations
-are used for it. The default is a single cell (one global model per arm).
-
-Cell keys are assigned when an observation arrives and stored with it, so
-both computation modes see the same data. Online clustering (DTS-OC) or a
-dyadic partitioning tree implement :class:`Partitioner`.
+Cell keys are assigned at arrival and stored with the observation, so both
+computation modes see the same data.
 """
 
 from __future__ import annotations
@@ -43,25 +38,11 @@ class OnlineKMeans(Partitioner):
     """
     Online k-means with discounted centroids (DTS-OC, Dzhoha & Rozora 2023).
 
-    An instance belongs to its nearest centroid. After it is observed, only
-    that centroid moves: ``m = gamma * m + z``, ``w = gamma * w + 1``,
-    ``c = m / w``, so centroids follow covariate drift.
-
-    Initialisation: k-means on the warm start if it has at least
-    ``n_clusters`` instances; otherwise the first instances (warm start, then
-    stream) become the centroids, one each, until ``n_clusters`` exist.
-    Instances identical to an existing centroid do not open a new one.
-
-    Parameters
-    ----------
-    n_clusters : int
-        Number of clusters ``K``.
-    gamma : float, default=0.95
-        Discount of the centroid statistics, in ``(0, 1]``.
-    fuzziness : float, default=1.3
-        Fuzziness exponent ``l > 1`` of :meth:`membership`.
-    random_state : int or None, default=None
-        Seed of the warm-start k-means.
+    An instance belongs to its nearest centroid; after it is observed that
+    centroid moves: ``m = gamma m + z``, ``w = gamma w + 1``, ``c = m / w``.
+    Initialised by k-means on the warm start if it has ``n_clusters``
+    instances, otherwise each new distinct instance opens a centroid until
+    there are ``n_clusters``.
     """
 
     EPS = 1e-12
@@ -133,11 +114,9 @@ class OnlineKMeans(Partitioner):
 
     def membership(self, z: np.ndarray) -> float:
         """
-        Fuzzy penalty ``phi`` of ``z`` for its assigned cluster.
-
-        ``phi = 1 / sum_y (d_assigned / d_y) ** (2 / (l - 1))``: 1 when ``z``
-        clearly belongs to its cluster, ``1 / K`` when it is equally far from
-        all ``K`` centroids. 1 for a new cluster or a zero distance.
+        Fuzzy penalty ``phi = 1 / sum_y (d_assigned / d_y) ** (2 / (l - 1))``:
+        1 when ``z`` clearly belongs to its cluster (or opens a new one),
+        ``1 / K`` when it is equally far from all ``K`` centroids.
         """
         d = self.distances(z)
         y = self.assign(z)

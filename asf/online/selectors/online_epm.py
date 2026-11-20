@@ -1,12 +1,9 @@
 """
 Online selector with one runtime model per algorithm (Degroote et al., 2018).
 
-Every algorithm gets its own regression model (an empirical performance
-model, EPM) that predicts its performance from the instance features. Each
-model learns only from the instances on which its algorithm was run, so the
-partially observed online data needs no imputation. The selector picks the
-algorithm with the best prediction (greedy), occasionally a random one
-(epsilon-greedy), or the best optimistic prediction (UCB).
+One regression model (EPM) per algorithm, trained only on the instances it
+ran on, so partially observed data needs no imputation. Selection is greedy,
+epsilon-greedy or UCB on the predictions.
 
 Reference
 ---------
@@ -43,11 +40,9 @@ LOG_FLOOR = 1e-6
 
 def default_estimator() -> RandomForestRegressor:
     """
-    The random forest of Degroote et al.: R ``randomForest`` defaults.
-
-    500 trees, ``mtry = p/3``, bootstrap sampling with replacement and
-    ``nodesize = 5``. R only splits nodes with more than ``nodesize``
-    instances, which is sklearn's ``min_samples_split=6``.
+    The random forest of Degroote et al. (R ``randomForest`` defaults): 500
+    trees, ``mtry = p/3``, bootstrap, ``nodesize = 5`` (= sklearn's
+    ``min_samples_split=6``).
     """
     return RandomForestRegressor(
         n_estimators=500, max_features=1 / 3, min_samples_split=6, bootstrap=True
@@ -58,33 +53,16 @@ def jackknife_after_bootstrap_sd(
     tree_preds: np.ndarray, oob: np.ndarray, bias_correction: bool = True
 ) -> np.ndarray:
     """
-    Jackknife-after-bootstrap standard error of a bagged prediction.
-
-    This is the estimator mlr's ``regr.randomForest`` uses for
-    ``se.method="jackknife"`` (Sexton and Laake, 2009; with the Monte-Carlo
-    bias correction of Wager, Hastie and Efron, 2014)::
+    Jackknife-after-bootstrap standard error of a bagged prediction, as mlr's
+    ``regr.randomForest`` with ``se.method="jackknife"`` (Sexton and Laake,
+    2009; bias correction of Wager, Hastie and Efron, 2014)::
 
         V = (n-1)/n * sum_i (mean_{b: i out-of-bag} t_b(x) - t(x))^2
             - (e-1) * n / B^2 * sum_b (t_b(x) - t(x))^2
 
-    where ``t(x)`` is the mean over all ``B`` trees and ``n`` the number of
-    training instances. Instances that are in-bag for every tree are left out
-    of the sum (as in mlr). Negative variances are set to 0.
-
-    Parameters
-    ----------
-    tree_preds : np.ndarray
-        Per-tree predictions, shape ``(n_queries, B)``.
-    oob : np.ndarray
-        Boolean out-of-bag mask, shape ``(n, B)``: ``True`` if training
-        instance ``i`` was not drawn for tree ``b``.
-    bias_correction : bool, default=True
-        Subtract the Monte-Carlo bias term.
-
-    Returns
-    -------
-    np.ndarray
-        Standard error per query, shape ``(n_queries,)``.
+    ``tree_preds`` has shape ``(n_queries, B)``, the out-of-bag mask ``oob``
+    ``(n, B)``. Instances in-bag for every tree are skipped (as in mlr);
+    negative variances become 0.
     """
     tree_preds = np.atleast_2d(np.asarray(tree_preds, dtype=float))
     oob = np.asarray(oob, dtype=bool)
@@ -117,119 +95,57 @@ class OnlineEPMSelector(AbstractOnlineSelector):
     """
     Regression-based online selector of Degroote et al. (2018).
 
-    One regression model per algorithm predicts its performance (PAR-k
-    runtime, or the quality score for ``maximize=True``). After every
-    instance the observed performance of the executed algorithms is added to
-    the training data (Algorithm 1 of the paper) and the models are updated
-    every ``update_every`` new data points (the paper's experiments: 10).
+    After every instance the executed runs join the training data
+    (Algorithm 1) and the models are updated every ``update_every`` new data
+    points (paper: 10). Strategies: ``"greedy"`` (Algorithm 2, best in the
+    paper), ``"epsilon_greedy"`` (a uniformly random algorithm with
+    probability ``epsilon``) and ``"ucb"`` (best ``prediction + gamma * sd``
+    with performance as "higher is better").
 
-    Selection strategies (Section "Online Algorithm Selection as a
-    Multi-armed Bandit"):
-
-    * ``"greedy"`` (Algorithm 2): the algorithm with the best prediction.
-    * ``"epsilon_greedy"``: with probability ``epsilon`` a uniformly random
-      algorithm (the predicted best included, so each algorithm has
-      probability ``epsilon / |A|``), otherwise greedy.
-    * ``"ucb"``: the best ``prediction + gamma * sd`` with performance as
-      "higher is better"; for runtimes this is the lowest
-      ``prediction - gamma * sd``.
-
-    Like the paper, the selector runs one algorithm per instance (default
-    gate :class:`~asf.online.gate.NoExtrasGate`). The paper's ``allData``
-    upper bound is ``gate=AllNomineesGate()`` (all other algorithms are nominated)
-    evaluated with ``result_mode="primary"``.
-
-    Prediction record: ``predicted_runtime`` is the predicted PAR-k value of
-    the chosen algorithm on the raw scale, ``uncertainty`` its standard error
-    on the model's target scale, ``scores`` the selection index of every
-    modelled algorithm (higher = preferred) and ``candidates`` all other
-    algorithms, unmodelled ones first, then by descending score.
+    One run per instance, as in the paper; its ``allData`` upper bound is
+    ``gate=AllNomineesGate()`` with ``result_mode="primary"``. The record's
+    ``uncertainty`` is the standard error on the target scale; ``candidates``
+    are unmodelled algorithms first, then by descending score.
 
     Assumptions and deviations
     --------------------------
-    * Assumption (uncertainty): the paper estimates standard deviations with
-      the Jackknife (Sexton and Laake, 2009) via mlr; implemented as mlr does
-      (:func:`jackknife_after_bootstrap_sd`). With one training instance the
-      standard error is 0.
-    * Assumption (timeouts): a run is unsolved if it was censored or its
-      runtime reaches the cutoff (as in the evaluator's PAR-k); its target is
-      ``par_factor * cutoff``, unless ``imputation`` is set. The cutoff is
-      that of the last observation, before the first one ``budget``.
-    * Censored imputation (Tornede et al., 2022; not in Degroote et al.):
-      with ``imputation`` set, unsolved runs are learnt from as follows.
-      :class:`~asf.online.imputation.CutoffImputer`: target = the budget the
-      run was stopped at (at most the cutoff).
-      :class:`~asf.online.imputation.DropCensored`: no target (the run is not
-      used). :class:`~asf.online.imputation.ExpectedImputer`: Schmee and Hahn
-      (1979) via ASF's :func:`~asf.preprocessing.schmee_hahn_imputer.schmee_hahn_impute`
-      on the target scale: start at the cutoff, then alternate fitting the
-      model and replacing each unsolved target by the mean of
-      ``N(prediction, sigma^2)`` above the cutoff, where ``sigma`` is the
-      error on the solved runs. Each model update then costs up to
-      ``imputation_max_iter + 1`` fits per algorithm with unsolved runs; the
-      normal assumption fits ``target_transform="log10"`` best. There a value
-      exactly at the cutoff counts as censored, and all unsolved runs are
-      censored at the cutoff (the selector always runs with the cutoff as
-      budget). Sampling rules have no batch version and are rejected.
-    * Deviation (missing features): the paper imputes the mean over the whole
-      scenario, which would use future instances; here each model imputes the
-      mean of its training instances (0 for features that are always missing).
-    * Assumption (update schedule): the counter of new data points includes
-      extra runs; once it reaches ``update_every``, every model whose training
-      data changed is refitted and the counter restarts at 0. ``update_every=1``
-      is Algorithm 1 literally. These updates are part of the normal learning
-      and are not logged as retrainings (their time is in ``selector_seconds``).
-    * Assumption (cold start): the paper does not say how algorithms without
-      data are handled. They are tried first, uniformly at random among them;
-      an algorithm gets a model as soon as it has its first observation. If
-      the chosen algorithm has no model, the record's predictions are ``None``.
-    * Assumption (ties): exact ties are broken uniformly at random.
-    * Assumption (window): the paper keeps all data (``window_size=None``).
-      With a window, an algorithm whose data left it loses its model at the
-      next update and counts as unmodelled again.
+    * Uncertainty: the jackknife via mlr, as in the paper
+      (:func:`jackknife_after_bootstrap_sd`); 0 with one training instance.
+    * Timeouts: censored or runtime ``>= cutoff`` (as the evaluator); target
+      ``par_factor * cutoff`` unless ``imputation`` is set. The cutoff is the
+      last observation's, before the first one ``budget``.
+    * Censored imputation (Tornede et al., 2022; not in the paper):
+      ``CutoffImputer`` trains on the budget, ``DropCensored`` drops the run,
+      ``ExpectedImputer`` runs Schmee and Hahn (1979) via
+      :func:`~asf.preprocessing.schmee_hahn_imputer.schmee_hahn_impute`
+      (up to ``imputation_max_iter + 1`` fits per algorithm, stopping at
+      ``imputation_tol``; best with ``target_transform="log10"``). Sampling
+      rules have no batch version and are rejected.
+    * Missing features: each model imputes the mean of its own training data
+      (the paper uses the whole scenario, i.e. future instances).
+    * Update schedule: extra runs count as data points; ``update_every=1`` is
+      Algorithm 1 literally. Updates are not logged as retrainings.
+    * Cold start: algorithms without data are tried first, at random among
+      them; their record predictions are ``None``.
+    * Ties are broken at random. With a ``window_size`` an algorithm whose
+      data left the window becomes unmodelled again (paper: all data).
 
     Parameters
     ----------
-    strategy : {"greedy", "epsilon_greedy", "ucb"}, default="greedy"
-        Selection strategy; greedy performed best in the paper.
-    epsilon : float, default=0.05
-        Exploration probability of ``"epsilon_greedy"`` (paper: 0.05).
-    gamma : float, default=1.0
-        Weight of the standard error in ``"ucb"`` (paper: 1).
     estimator : sklearn regressor or None, default=None
-        Template cloned for every algorithm; ``None`` = :func:`default_estimator`.
-        With ``uncertainty`` set it must be a forest (``RandomForestRegressor``,
-        ``ExtraTreesRegressor``), for ``"jackknife"`` with ``bootstrap=True``.
-        Set ``n_jobs`` on it to fit in parallel.
+        Template cloned per algorithm (``None`` = :func:`default_estimator`).
+        Needs to be a forest for ``uncertainty``, with ``bootstrap=True`` for
+        the jackknife. Set ``n_jobs`` on it to fit in parallel.
     uncertainty : {"jackknife", "tree_std"} or None, default="jackknife"
-        Standard error of a prediction: jackknife-after-bootstrap (paper) or
-        the standard deviation across trees. ``None`` skips it (faster; not
-        allowed with ``"ucb"``).
-    jackknife_bias_correction : bool, default=True
-        Monte-Carlo bias correction of the jackknife (as in mlr).
+        Jackknife (paper) or the spread across trees; ``None`` is faster but
+        not allowed with ``"ucb"``.
     target_transform : {"none", "log10"}, default="none"
-        Scale the models are trained on: the raw performance (paper) or its
-        log10 (runtimes clipped to ``LOG_FLOOR``). Not for ``maximize=True``.
-    par_factor : float, default=10.0
-        Penalty factor for unsolved runs (PAR10 in the paper).
-    update_every : int, default=10
-        Number of new data points after which the models are updated.
+        Train on raw performance (paper) or its log10 (runtimes only).
     imputation : CensoredImputer or None, default=None
-        How unsolved runs are learnt from (see "Censored imputation" above);
-        ``None`` = the PAR-k target (paper). Not for ``maximize=True``.
-    imputation_max_iter : int, default=20
-        Maximum number of fits of the Schmee-Hahn iteration
-        (``ExpectedImputer`` only).
-    imputation_tol : float, default=1e-3
-        The iteration stops once no imputed target changes by more than this
-        (target scale; ``ExpectedImputer`` only).
-    window_size : int or None, default=None
-        Instances kept as training data; ``None`` = all (paper).
+        See above; ``None`` = the PAR-k target (paper). Runtimes only.
     **kwargs : Any
         Forwarded to :class:`~asf.online.base.AbstractOnlineSelector`
-        (``gate``, ``detector``, ``drift_response``, ``retrain_every``,
-        ``budget`` -- the cutoff of the warm start --, ``maximize``,
-        ``random_state``, ...).
+        (``budget`` is the warm start's cutoff).
     """
 
     def __init__(
@@ -344,15 +260,10 @@ class OnlineEPMSelector(AbstractOnlineSelector):
         self, performance: pd.DataFrame, censored: pd.DataFrame
     ) -> np.ndarray:
         """
-        Training targets per instance and algorithm (``NaN`` = not run).
-
-        Unsolved runs (censored, or runtime at or above the cutoff) get
-        ``par_factor * cutoff`` without ``imputation``. With it they get the
-        rule's value at their bound (the budget, at most the cutoff): the
-        bound for :class:`~asf.online.imputation.CutoffImputer` and as the
-        start of the Schmee-Hahn iteration, ``NaN`` for
-        :class:`~asf.online.imputation.DropCensored`. Then
-        ``target_transform`` is applied.
+        Training targets (``NaN`` = not run): unsolved runs get
+        ``par_factor * cutoff``, or with ``imputation`` the rule's value at
+        their bound (``ExpectedImputer``: the bound, as the start of its
+        iteration); then ``target_transform`` is applied.
         """
         values = performance.to_numpy(dtype=float, copy=True)
         unsolved = self._unsolved(values, censored)
@@ -416,10 +327,8 @@ class OnlineEPMSelector(AbstractOnlineSelector):
 
     def _schmee_hahn(self, index: int, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         """
-        Impute the unsolved targets of one algorithm (Schmee and Hahn, 1979).
-
-        ``y`` holds the training targets with unsolved runs at the cutoff (on
-        the target scale), which is how :func:`schmee_hahn_impute` finds them.
+        Schmee-Hahn imputation of one algorithm's unsolved targets, which
+        sit at the cutoff on the target scale.
         """
         if not math.isfinite(self.cutoff_):
             return y

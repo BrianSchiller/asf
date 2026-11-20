@@ -35,19 +35,8 @@ from asf.online.selectors.bandits.weighting import (
 
 class ThompsonSamplingSelector(AbstractContextualBandit):
     """
-    Context-free Gaussian Thompson Sampling (Agrawal & Goyal, 2013).
-
-    Parameters
-    ----------
-    scale : float, default=1.0
-        Posterior inflation (exploration strength).
-    prior_precision : float, default=1.0
-        Pseudo-count of the zero-mean prior.
-    noise_var : float, default=1.0
-        Reward noise variance.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit` (e.g. ``weighting``,
-        ``partitioner``, ``confidence``, ``budget``, ``random_state``).
+    Context-free Gaussian Thompson Sampling (Agrawal & Goyal, 2013);
+    ``scale`` inflates the posterior (exploration strength).
     """
 
     def __init__(
@@ -69,21 +58,9 @@ class ThompsonSamplingSelector(AbstractContextualBandit):
 
 class LinTSSelector(AbstractContextualBandit):
     """
-    Linear Thompson Sampling with disjoint models (Agrawal & Goyal, 2013).
-
-    Each step draws ``theta_a ~ N(theta_hat_a, scale^2 * noise_var * A_a^-1)``
-    per arm and plays ``argmax_a x @ theta_a``.
-
-    Parameters
-    ----------
-    scale : float, default=1.0
-        Posterior inflation ``v``.
-    prior_precision : float, default=1.0
-        Ridge regularisation ``lambda``.
-    noise_var : float, default=1.0
-        Reward noise variance.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
+    Linear Thompson Sampling with disjoint models (Agrawal & Goyal, 2013):
+    per arm ``theta_a ~ N(theta_hat_a, scale^2 * noise_var * A_a^-1)``, play
+    ``argmax_a x @ theta_a``.
     """
 
     def __init__(
@@ -109,25 +86,11 @@ class DiscountedTSSelector(ThompsonSamplingSelector):
     """
     Discounted Thompson Sampling (DS-TS).
 
-    Per arm, ``theta ~ N(mu_hat, c * sigma^2 / N)`` with the discounted play
-    count ``N = sum_j gamma^(t-j) [arm played at j]`` and the discounted mean
-    ``mu_hat``. All arms decay every round, so the variance of rarely played
-    arms grows and they are re-explored.
-
-    The paper weights the newest observation by ``gamma``, the framework by 1;
-    ``noise_var`` is divided by ``gamma`` internally so the posterior is
-    exactly the paper's.
-
-    Parameters
-    ----------
-    gamma : float, default=0.99
-        Discount factor in ``(0, 1]``.
-    noise_var : float, default=1.0
-        Reward variance ``sigma^2``.
-    c : float, default=1.0
-        Variance inflation (4 in the theoretical analysis, 1 in practice).
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
+    Per arm ``theta ~ N(mu_hat, c * sigma^2 / N)`` with the play count ``N``
+    and mean ``mu_hat`` discounted by ``gamma`` every round, so rarely played
+    arms are re-explored (``c``: 4 in the analysis, 1 in practice). The paper
+    weights the newest observation by ``gamma``, so ``noise_var`` is divided
+    by ``gamma`` internally.
     """
 
     def __init__(
@@ -150,21 +113,8 @@ class DiscountedTSSelector(ThompsonSamplingSelector):
 
 class SlidingWindowTSSelector(ThompsonSamplingSelector):
     """
-    Sliding-Window Thompson Sampling (SW-TS).
-
-    Per arm, ``theta ~ N(mu_hat, c * sigma^2 / N)`` where ``N`` and ``mu_hat``
-    are computed over the last ``window`` global steps only.
-
-    Parameters
-    ----------
-    window : int, default=100
-        Window length ``tau`` in steps (instances), shared by all arms.
-    noise_var : float, default=1.0
-        Reward variance ``sigma^2``.
-    c : float, default=1.0
-        Variance inflation.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
+    Sliding-Window Thompson Sampling (SW-TS): ``theta ~ N(mu_hat, c * sigma^2
+    / N)`` over the last ``window`` steps (shared by all arms).
     """
 
     def __init__(
@@ -187,27 +137,10 @@ class FDSWTSSelector(AbstractContextualBandit):
     """
     f-Discounted-Sliding-Window Thompson Sampling (f-dsw TS).
 
-    Every arm keeps two Beta posteriors over a reward in ``[0, 1]``:
-
-    * historic trace -- all observations, discounted by ``gamma`` per step
-        (all arms decay every round);
-    * hot trace -- only the last ``window`` pulls of that arm.
-
-    One sample is drawn from each and combined with ``aggregate``
-    (``"min"``, ``"max"`` or ``"mean"``); the arm with the largest combined
-    sample is played. Rewards are the ``"unit"`` reward (log-scaled PAR10 in
-    ``[0, 1]``) with fractional Beta updates.
-
-    Parameters
-    ----------
-    gamma : float, default=0.99
-        Discount factor of the historic trace.
-    window : int, default=30
-        Per-arm window size ``n`` of the hot trace.
-    aggregate : {"mean", "min", "max"}, default="mean"
-        The aggregation function ``f``.
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit`.
+    Two Beta posteriors per arm: a historic trace discounted by ``gamma``
+    every round and a hot trace of the arm's last ``window`` pulls. One
+    sample from each is combined by ``aggregate``. Rewards are the ``"unit"``
+    reward (log PAR10 in ``[0, 1]``) with fractional Beta updates.
     """
 
     def __init__(
@@ -235,46 +168,17 @@ class DTSOCSelector(AbstractContextualBandit):
     """
     DTS-OC: discounted Beta Thompson Sampling per online cluster.
 
-    Per instance:
+    Each instance goes to the nearest :class:`OnlineKMeans` centroid; that
+    cluster's Beta posteriors pick the arm; the played arm is discounted by
+    ``gamma`` and updated with the reward times the fuzzy penalty ``phi``;
+    then the centroid moves (discount ``cluster_gamma``, default ``gamma``).
 
-    1. Assign it to the nearest centroid of an :class:`OnlineKMeans`
-        partitioner (distances on the standardised features).
-    2. Draw one Beta sample per algorithm from that cluster's posteriors and
-        run the algorithm with the largest sample.
-    3. Update the played arm of that cluster with the reward scaled by the
-        fuzzy penalty ``phi`` (computed before the centroid moves), after
-        discounting its counts by ``gamma``; then move the centroid.
-
-    Differences to the paper: the centroid moves in ``observe`` instead of
-    ``propose`` (so ``propose`` has no side effects); rewards are the
-    fractional ``"unit"`` reward instead of Bernoulli (use
-    ``reward=RewardTransform("solved")`` for a binary one); the Beta prior is
-    added at sampling time and never discounted.
-
-    Parameters
-    ----------
-    n_clusters : int, default=5
-        Number of clusters ``K``.
-    gamma : float, default=0.95
-        Discount of the bandit counts.
-    cluster_gamma : float or None, default=None
-        Discount of the centroid statistics (``None`` = ``gamma``).
-    fuzziness : float, default=1.3
-        Fuzziness exponent ``l > 1`` of the penalty; values close to 1 make
-        ``phi`` close to 1 for all but truly ambiguous instances.
-    per_step_discount : bool, default=False
-        ``False`` (paper): only the updated arm of the assigned cluster is
-        discounted. ``True``: every arm in every cluster decays every step
-        (as in DS-TS), so arms that are not played are re-explored.
-    posterior : Callable[[int], Posterior] or None, default=None
-        Per-arm model; ``None`` = :class:`BetaPosterior`. E.g.
-        ``partial(BayesianLinearRegression, ...)`` with ``contextual=True``
-        and a ``"log"`` reward gives LinTS per cluster.
-    contextual : bool, default=False
-        Feed the features to the per-arm model (needs a linear posterior).
-    **kwargs : Any
-        Forwarded to :class:`AbstractContextualBandit` (e.g. ``budget``,
-        ``random_state``, ``reward``, ``confidence``).
+    Differences to the paper: the centroid moves in ``observe``, not
+    ``propose``; the reward is the fractional ``"unit"`` reward (use
+    ``RewardTransform("solved")`` for a binary one); the Beta prior is never
+    discounted. ``per_step_discount=True`` decays every arm of every cluster
+    each step, as in DS-TS (paper: only the updated arm). ``posterior`` and
+    ``contextual`` swap the per-arm model, e.g. LinTS per cluster.
     """
 
     def __init__(

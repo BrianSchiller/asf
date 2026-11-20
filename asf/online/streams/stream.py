@@ -20,28 +20,12 @@ class StreamItem:
 @dataclass
 class InstanceStream:
     """
-    Time-ordered instances plus the *complete* performance matrix.
+    Time-ordered instances plus the *complete* performance matrix, which only
+    the evaluator reads (selectors see the runs they make).
 
-    The full matrix is the ground truth and is only accessed by the evaluator;
-    selectors only learn the entries of the algorithms they actually run.
-
-    Attributes
-    ----------
-    features : pd.DataFrame
-        Instance features in arrival order (index = instance ids).
-    performance : pd.DataFrame
-        Raw runtimes, same index and order as ``features`` (timeouts NOT yet
-        penalised; values at or above ``cutoff`` count as unsolved).
-    cutoff : float
-        Scenario cutoff time.
-    drift_points : tuple[int, ...], default=()
-        Stream positions where drift was injected (ground truth for detection
-        metrics).
-    name : str, default="stream"
-        Label used in result tables.
-    transition_intervals : tuple[tuple[int, int], ...], default=()
-        Half-open intervals [start, end) of gradual feature shifts. Sudden
-        changes have points but no intervals.
+    ``performance`` holds raw runtimes (values at or above ``cutoff`` count as
+    unsolved). ``drift_points`` are the injected drift positions and
+    ``transition_intervals`` the half-open ``[start, end)`` gradual shifts.
     """
 
     features: pd.DataFrame

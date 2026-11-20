@@ -47,90 +47,31 @@ class _RandomBinaryPredictor:
 
 class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector):
     """
-    Partial one-vs-one selector trained from parallel runs on a stream.
+    Partial one-vs-one selector trained from parallel runs (Rook et al.).
 
-    This mirrors the selector of Rook et al.:
+    * **Parallel runs.** The chosen algorithm runs next to ``n_additional``
+      sampled ones; the user gets the best result.
+    * **Partial one-vs-one.** One classifier per pair, trained on instances
+      where both ran; majority vote, ties at random. ``"paper"`` labels
+      ``i >= j`` as ``i`` winning (Section 4.4) and uses Bernoulli(0.5) for
+      pairs without data; ``"code"`` uses ``i > j`` and skips such pairs.
+    * **Variant.** ``"paper"``: uniform or inverse-accuracy sampling of the
+      extras (accuracy by ``error_estimation_folds``-fold CV, ASF's choice).
+      ``"code"`` (the authors' source): least-observed, or weights
+      ``1 +`` in-sample F1 error; it assumes ``maximize=True``.
+    * **Initialisation.** Random choices during ``reference_period``
+      (default 500 in both sources). ``"code"`` trains after
+      ``reference_period + 1`` instances, as the original ``StreamAS``, and
+      runs detection on that instance. A warm start (an ASF extension) skips
+      the reference period.
+    * **Retraining.** A drift signal triggers ``RetrainResponse`` by default
+      (unless ``retrain_every`` is given): retrain on the full history
+      (``window_size=None``) and refit the detector.
 
-    * **Parallel runs.** Per instance the selected algorithm is complemented with
-      ``n_additional`` further algorithms (default 1). All of them run and the
-      best result is returned to the user (``RESULT_MODE``).
-    * **Partial one-vs-one.** One binary classifier per algorithm pair ``(i, j)``,
-      trained only on instances where BOTH algorithms were run. Prediction is by
-      majority vote with ties broken uniformly at random. Label ties differ per
-      variant: ``"paper"`` labels ``i >= j`` as ``i`` winning (Section 4.4),
-      ``"code"`` uses a strict ``i > j``, so ties go to ``j``. Pairs without
-      comparisons use a Bernoulli(0.5) predictor (``"paper"``) or are skipped
-      (``"code"``).
-    * **Implementation variant.** ``variant="paper"`` follows the paper's
-      uniform or inverse-accuracy sampling. ``variant="code"`` follows the
-      authors' source code: least-observed sampling or weighted sampling by
-      ``1 +`` in-sample F1 error.
-    * **Initialisation.** No prior knowledge is assumed. The paper variant
-      samples a random subset during its reference period and trains after
-      exactly ``reference_period`` instances. The code variant chooses a random
-      primary and least-observed additional algorithms and, as in the original
-      ``StreamAS``, trains only after ``reference_period + 1`` instances (the
-      original checks ``len(stream) >= train_period`` before appending the
-      current instance). The drift detector then also processes that instance.
-      If warm-start data is passed to ``fit`` (an ASF extension that is in
-      neither source), training starts from that data and the reference period
-      is skipped.
-    * **Retraining.** By default, a drift signal triggers a
-      :class:`~asf.online.retraining.RetrainResponse`: all classifiers are
-      retrained on the FULL history and the detector is refitted on it as
-      well. Hence ``window_size=None``. ``retrain_every`` retrains on a
-      schedule instead (drift signals are then only recorded unless a
-      ``drift_response`` is given too).
-    * **Extra runs.** The selector nominates its ``n_additional`` sampled
-      algorithms (``PredictionRecord.candidates``); the default gate runs all
-      of them. A different ``gate`` makes the extra runs conditional.
-
-    Parameters
-    ----------
-    model_class : type, default=DecisionTreeClassifier
-        Binary classifier class (any sklearn-compatible class or ASF predictor).
-    n_additional : int, default=1
-        Number of additional algorithms run next to the selected one.
-    variant : {"paper", "code"}, default="paper"
-        Which sampling and pairwise-error implementation to use.
-    additional_strategy : str or None, default=None
-        Defaults to ``"error_guided"`` for the paper variant and
-        ``"least_observed"`` for the code variant. Paper options are
-        ``"error_guided"`` and ``"uniform"``; code options are
-        ``"least_observed"`` and ``"cost_based"``.
-    reference_period : int or None, default=None
-        Cold-start period. Defaults to 500 for both variants (paper,
-        Section 4.3: "always 500"; code: ``train_period=500``). For
-        ``"code"`` one extra instance is consumed, see above. The code variant
-        assumes a maximizing quality measure, as does the original
-        implementation.
-    detector : AbstractDriftDetector, AbstractScalarDriftDetector or None, default=None
-        Drift detector, fitted at the end of the reference period (or right
-        after a warm start) and re-referenced after every retraining. The
-        original detector only uses features.
-    drift_statistic : DriftStatistic or None, default=None
-        Required with a scalar detector, see
-        :class:`~asf.online.base.AbstractOnlineSelector`.
-    drift_response : AbstractDriftResponse, sequence of them, or None, default=None
-        What to do on a drift signal. ``None`` defaults to
-        ``RetrainResponse()`` if a detector is given and no
-        ``retrain_every`` is, and to no response otherwise.
-    retrain_every : int or None, default=None
-        Retrain after every ``retrain_every`` stream instances (the current
-        one included, the warm start not counted).
-    gate : AbstractExtraRunGate or None, default=None
-        Extra-run gate; ``None`` runs all ``n_additional`` nominees.
-    error_estimation_folds : int, default=5
-        Folds used to estimate pairwise accuracy for paper-variant weights.
-        Cross-validation is ASF's estimate because the paper does not specify
-        this calculation. The code variant instead uses training-set
-        F1 error.
-    accuracy_floor : float, default=1e-3
-        Lower bound on estimated accuracy to keep inverse weights finite.
-    window_size : int or None, default=None
-        History kept for retraining; ``None`` = all seen data (as in the paper).
-    **kwargs : Any
-        Forwarded to the base classes (``random_state``, ``maximize``, ...).
+    ``additional_strategy`` defaults to ``"error_guided"`` (paper; or
+    ``"uniform"``) / ``"least_observed"`` (code; or ``"cost_based"``).
+    ``accuracy_floor`` keeps inverse-accuracy weights finite. Other
+    parameters: see :class:`~asf.online.base.AbstractOnlineSelector`.
     """
 
     PREFIX = "online_pairwise"
@@ -319,7 +260,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         return better.astype(int)
 
     def _train(self) -> None:
-        """(Re)train every pair classifier on all pairwise comparisons in the buffer."""
+        """(Re)train every pair classifier on the buffer."""
         assert self.buffer is not None
         X, P = self.buffer.features(), self.buffer.performance()
         self._reset_models()
@@ -385,7 +326,7 @@ class OnlinePairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
         return candidates[np.argsort(counts, kind="stable")[:n]]
 
     def _code_extras(self, selected: int, candidates: np.ndarray) -> np.ndarray:
-        """Apply the original's least-observed or ``1 + F1 error`` sampling rule."""
+        """The original's least-observed or ``1 + F1 error`` sampling."""
         if self.additional_strategy == "least_observed":
             return self._least_observed(candidates, self.n_additional)
         errors = self.pair_f1_error_[selected, candidates]

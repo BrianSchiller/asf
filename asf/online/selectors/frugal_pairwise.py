@@ -42,21 +42,9 @@ _Model = Any
 
 def least_confidence(p: np.ndarray | float) -> np.ndarray:
     """
-    Least-confidence uncertainty of binary predictions, ``1 - max(p, 1 - p)``.
-
-    ``0`` for a certain prediction, ``0.5`` for a coin flip. For two classes,
-    margin and entropy rank predictions in the same order (Kuş et al., JAIR,
-    Appendix A).
-
-    Parameters
-    ----------
-    p : np.ndarray or float
-        Probability of one of the two classes.
-
-    Returns
-    -------
-    np.ndarray
-        Uncertainty per entry, in ``[0, 0.5]``.
+    Least confidence ``1 - max(p, 1 - p)`` of binary predictions, in
+    ``[0, 0.5]``. For two classes margin and entropy rank the same (Kuş et
+    al., JAIR, Appendix A).
     """
     p = np.asarray(p, dtype=float)
     return 1.0 - np.maximum(p, 1.0 - p)
@@ -66,77 +54,34 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
     """
     One-vs-one selector that runs a second algorithm only when it is unsure.
 
-    Adapts frugal algorithm selection (Kuş et al.) from pool-based to
+    Frugal algorithm selection (Kuş et al.) moved from pool-based to
     stream-based active learning:
 
-    * **Model.** One binary classifier per algorithm pair ``(i, j)``
-      predicting whether ``i`` beats ``j``, trained on the instances where both
-      ran. The algorithm with the most votes is chosen; vote ties are broken
-      uniformly at random. Pairs without data cast no vote. A pair whose
-      labels all agree predicts ``(k + 1) / (n + 2)`` (Laplace) instead of
-      being fully certain after a single example.
-    * **Labels.** A finished run beats a timed-out run. Pairs where both timed
-      out are not used for training (Kuş et al., Algorithm 1, line 7). Equal
-      performance counts as a win for ``i``.
-    * **Uncertainty.** For every other algorithm ``a``, the least confidence
-      (:func:`least_confidence`) of the pair (chosen, ``a``). The nominees for
-      an extra run are the other algorithms, most uncertain pair first;
-      ``PredictionRecord.uncertainty`` is the uncertainty of the first
-      nominee. The default gate, :class:`~asf.online.gate.UncertaintyGate`
-      with ``threshold=0.25``, runs that nominee if the uncertainty reaches
-      the threshold. With ``candidate_order="runner_up"`` only the algorithm
-      with the second-most votes is nominated, and the uncertainty is that of
-      the pair (chosen, runner-up): an extra run is then only spent when the
-      runner-up might be better, not on pairs with hopeless algorithms.
-    * **Timeout predictors (optional).** One classifier per algorithm predicts
-      whether it times out. ``timeout_filter`` drops a nominee if it and the
-      chosen algorithm are both predicted to time out (a double timeout is
-      costly and teaches nothing; JAIR, Algorithm 2). ``timeout_voting``
-      removes algorithms predicted to time out before voting, unless all are
-      (arXiv, Section 3.2).
-    * **Updates.** After an instance, only the pairs (and timeout predictors)
-      of the algorithms that ran are refitted, on the buffer.
+    * **Model.** One classifier per pair, trained where both ran; most votes
+      wins, ties at random; untrained pairs do not vote. A pair whose labels
+      all agree predicts ``(k + 1) / (n + 2)`` (Laplace).
+    * **Labels.** A finished run beats a timeout; two timeouts are not used
+      (Algorithm 1, line 7); equal performance counts for ``i``.
+    * **Uncertainty.** Nominees are the other algorithms, most uncertain pair
+      (:func:`least_confidence`) first; ``uncertainty`` is the first
+      nominee's. The default gate runs it if that reaches 0.25.
+      ``candidate_order="runner_up"`` nominates only the vote runner-up, so
+      extra runs go to a rival that might be better; ``"random"`` is the
+      paper's random baseline.
+    * **Timeout predictors.** ``timeout_filter`` drops a nominee if it and
+      the chosen one are both predicted to time out (JAIR, Algorithm 2);
+      ``timeout_voting`` excludes predicted timeouts from voting unless all
+      are (arXiv, Section 3.2). Runtimes ``>= cutoff`` count as timeouts
+      (``None``: ``budget``, else the first observation's cutoff).
+    * **Updates.** After every ``update_every`` instances only the pairs and
+      timeout predictors of algorithms that ran are refitted.
 
-    The paper's initial set (all algorithms on 20 instances) corresponds to
-    a warm start (``n_warmstart=20``). On a cold start, all pairs are
-    untrained and maximally uncertain, so the default gate always fires until
-    data arrives. Dynamic time limits and the cost-aware PC/PD criteria of the
-    paper are not implemented.
-
-    Parameters
-    ----------
-    model_class : type or Callable, default=RandomForestClassifier
-        Pair classifier; must provide ``predict_proba`` (directly or as the
-        wrapped ``model_class`` of an ASF ``SklearnWrapper``). sklearn's
-        defaults match the paper's random forest (100 trees, Gini, sqrt
-        features, bootstrap).
-    candidate_order : {"uncertainty", "random", "runner_up"}, default="uncertainty"
-        Order of the nominees: most uncertain pair first, uniformly random
-        (the paper's random-selection baseline), or only the vote runner-up
-        (ties broken at random).
-    timeout_filter : bool, default=False
-        Use timeout predictors to drop likely double-timeout nominees.
-    timeout_voting : bool, default=False
-        Use timeout predictors to exclude likely timeouts from voting.
-    timeout_model_class : type or Callable, default=RandomForestClassifier
-        Classifier for the timeout predictors.
-    cutoff : float or None, default=None
-        Runtimes ``>= cutoff`` count as timeouts (censored runs always do).
-        ``None`` uses ``budget`` and otherwise the cutoff of the first
-        observation. Timeout predictors with a warm start need it.
-    update_every : int, default=1
-        Refit the changed models after every ``update_every`` instances.
-    window_size : int or None, default=None
-        Instances kept in the buffer; ``None`` keeps all (as the paper's
-        labelled set, which only grows).
-    gate : AbstractExtraRunGate or None, default=None
-        Extra-run gate; ``None`` = ``UncertaintyGate(threshold=0.25, n=1)``.
-    detector, drift_statistic, drift_response, retrain_every, detector_reference_size
-        See :class:`~asf.online.base.AbstractOnlineSelector`. Supported
-        responses: ``RetrainResponse`` (refit all models) and ``ResetResponse``
-        (forget all data seen so far).
-    **kwargs : Any
-        Forwarded to the base classes (``random_state``, ``maximize``, ...).
+    The paper's initial set (all algorithms on 20 instances) is a warm start
+    of 20. Dynamic time limits and the cost-aware criteria are not
+    implemented. The default random forest matches the paper's;
+    ``model_class`` needs ``predict_proba``. ``window_size=None`` keeps all
+    data, like the paper's growing labelled set. Drift responses:
+    ``RetrainResponse`` and ``ResetResponse``.
     """
 
     PREFIX = "frugal_pairwise"
@@ -292,10 +237,9 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
 
     def _votes(self, probs: np.ndarray, timeouts: np.ndarray) -> np.ndarray:
         """
-        Votes of the trained pairs for one instance. ``i`` wins its pair if
-        ``P(i beats j) > 0.5`` (like ``predict``, ties go to ``j``). With
-        ``timeout_voting``, predicted timeouts get no votes and are not
-        counted, unless all algorithms are predicted to time out.
+        Votes for one instance: ``i`` wins if ``P(i beats j) > 0.5``. With
+        ``timeout_voting``, predicted timeouts neither vote nor get votes
+        (unless all are predicted to time out).
         """
         m = len(self.algorithms)
         allowed = np.ones(m, dtype=bool)
@@ -367,9 +311,8 @@ class FrugalPairwiseSelector(AbstractOnlineSelector, AbstractModelBasedSelector)
     @staticmethod
     def _train(make: Any, x: np.ndarray, y: np.ndarray) -> _Model:
         """
-        Fit a classifier. If all labels agree, return the Laplace estimate
-        ``(k + 1) / (n + 2)`` of ``P(label 1)`` instead, so that one or two
-        examples do not make the pair fully certain.
+        Fit a classifier, or if all labels agree return the Laplace estimate
+        ``(k + 1) / (n + 2)``, so a few examples do not make a pair certain.
         """
         if np.all(y == y[0]):
             return (float(y.sum()) + 1.0) / (len(y) + 2.0)
@@ -416,14 +359,8 @@ def _is_plain_forest(estimator: Any) -> bool:
 
 def _forest_proba(forest: ForestClassifier, x: np.ndarray) -> np.ndarray:
     """
-    ``forest.predict_proba(x)`` without sklearn's per-call overhead.
-
-    The selector asks every pair classifier about a single instance, so a
-    forest's ``predict_proba`` spends most of its time validating the input
-    and starting its thread pool rather than in the trees. This averages the
-    trees' probabilities directly, exactly as ``predict_proba`` does (same
-    trees, same mean), validating the input once. Inputs with missing values
-    take the regular ``predict_proba`` path.
+    ``forest.predict_proba(x)`` without sklearn's per-call input checks and
+    thread pool, which dominate for single instances. Same trees, same mean.
     """
     x32 = np.ascontiguousarray(x, dtype=np.float32)
     total = forest.estimators_[0].predict_proba(x32, check_input=False)

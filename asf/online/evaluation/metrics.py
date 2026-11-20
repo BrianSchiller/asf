@@ -34,16 +34,10 @@ def detection_metrics(
     """
     Compare detected drift steps with injected drift points.
 
-    A detection counts for a true drift point ``p`` if it falls in
-    ``[p, p + tolerance]``. Detections matching no point are counted as
-    ``n_false_alarms``; note that this includes repeat signals after a true
-    drift once the window has passed.
-
-    Returns
-    -------
-    dict
-        ``mean_delay`` (NaN if nothing was detected), ``n_missed``,
-        ``n_false_alarms``.
+    A detection in ``[p, p + tolerance]`` counts for drift point ``p``; all
+    others are false alarms (including repeat signals). Returns
+    ``mean_delay`` (NaN if nothing was detected), ``n_missed`` and
+    ``n_false_alarms``.
     """
     delays: list[int] = []
     missed = 0

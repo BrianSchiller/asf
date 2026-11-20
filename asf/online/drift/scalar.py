@@ -1,24 +1,12 @@
 """
-Performance-based drift detectors on a stream of scalars: ADWIN and EDDM.
+Drift detectors on a stream of scalars, typically the
+:class:`~asf.online.drift.statistics.LogRuntimeResidual` of the primary run:
+:class:`ADWINDetector` (the mean) and :class:`EDDMDetector` (the distance
+between errors).
 
-Both consume one number per instance, typically the
-:class:`~asf.online.drift.statistics.LogRuntimeResidual` of the primary run
-(``log(observed) - log(predicted)`` runtime):
-
-* :class:`ADWINDetector` watches the mean of the values (Bifet and Gavalda,
-  2007).
-* :class:`EDDMDetector` turns each value into an error ("more than
-  ``error_threshold`` above the prediction") and watches the distance
-  between errors (Baena-Garcia et al., 2006).
-
-Censored runs
--------------
-If the primary run hit its budget, the value is only a *lower bound*. Both
-detectors pass it through a :class:`~asf.online.imputation.CensoredImputer`
-first (``imputation``): use the bound itself (default), drop the instance, or
-impute a value above the bound. The belief the imputing rules need is the
-normal distribution with the mean and standard deviation of the uncensored
-values seen since the last reset.
+A censored value (lower bound) goes through ``imputation`` first: the bound
+(default), dropped, or imputed above it from a normal belief with the mean
+and sd of the uncensored values since the last reset.
 
 References
 ----------
@@ -43,20 +31,9 @@ from asf.online.imputation import CensoredImputer, CutoffImputer
 
 class _CensoredInput:
     """
-    Shared handling of censored values (lower bounds) for scalar detectors.
-
-    Keeps the running mean and standard deviation of the uncensored values
-    since the last reset and uses them as the belief of the imputation rule.
-    With fewer than two uncensored values there is no belief yet (``sd =
-    inf``), so the imputing rules return the bound.
-
-    Parameters
-    ----------
-    imputation : CensoredImputer or None
-        Rule applied to censored values; ``None`` = use the bound
-        (:class:`~asf.online.imputation.CutoffImputer`).
-    random_state : int or None
-        Seed of the stochastic rules. The generator restarts at every reset.
+    Imputes censored values for scalar detectors from the running mean and
+    sd of the uncensored ones (no belief, ``sd = inf``, before two of them).
+    ``imputation=None`` uses the bound; the rng restarts at every reset.
     """
 
     def __init__(
@@ -78,12 +55,7 @@ class _CensoredInput:
         self._ss_exact = 0.0  # sum of squared deviations from the mean
 
     def _resolve(self, value: float, censored: bool) -> float | None:
-        """
-        The value the detector uses, or ``None`` to skip the instance.
-
-        Uncensored values pass through and update the belief. Censored ones
-        go through the imputation rule; the result is never below the bound.
-        """
+        """The value to use (``None`` = skip); never below a censored bound."""
         value = float(value)
         if not math.isfinite(value):
             raise ValueError("Scalar detectors need finite values.")
@@ -105,14 +77,12 @@ class _CensoredInput:
 
 class ADWINDetector(_CensoredInput, AbstractScalarDriftDetector):
     """
-    ADWIN: adaptive windowing on the mean of a scalar stream.
+    ADWIN: adaptive windowing on the mean of a scalar stream (Bifet and
+    Gavalda, 2007).
 
-    The detector keeps a window ``W`` of the most recent values. After every
-    new value it checks all splits ``W = W0 . W1`` (old part, new part) and,
-    while some split has ``|mean(W1) - mean(W0)| >= eps_cut``, drops the oldest
-    value (Figure 1 of the paper). A shrinking window is the drift signal.
-    With ``n0``, ``n1`` and ``n`` the lengths of ``W0``, ``W1`` and ``W`` and
-    ``m = 1 / (1/n0 + 1/n1)``:
+    After every value, while some split ``W = W0 . W1`` of the window has
+    ``|mean(W1) - mean(W0)| >= eps_cut``, the oldest value is dropped; a
+    shrinking window is the drift signal. With ``m = 1 / (1/n0 + 1/n1)``:
 
     * ``bound="hoeffding"`` (the rigorous test)::
 
@@ -124,59 +94,22 @@ class ADWINDetector(_CensoredInput, AbstractScalarDriftDetector):
           eps_cut = sqrt(2 / m * var * ln(2 / d)) + 2 / (3 m) * ln(2 / d),
           d = delta / ln(n)
 
-    Both tests assume values in ``[0, 1]``; other ranges are rescaled
-    (``value_range``).
-
-    Signal: ``drift`` is ``True`` if the window shrank at this step,
-    ``score`` is the mean of the window on the input scale (``None`` while
-    it is empty). ADWIN has no warning zone.
+    Values are clipped to ``value_range`` and rescaled to ``[0, 1]`` (for log
+    residuals e.g. ``(-log 10, log 10)``). ``score`` is the window mean on the
+    input scale; there is no warning zone.
 
     Assumptions and deviations
     --------------------------
-    * Deviation (exact ADWIN): this is ADWIN, not the bucket-based ADWIN2,
-      which only approximates it to save time and memory. Every split is
-      checked; an update costs one pass over the window.
-    * Assumption (shrinking): the paper says "drop elements from the tail";
-      here one value (the oldest) is dropped at a time and all splits are
-      tested again. No minimum sub-window length is needed, a very short
-      sub-window cannot reach ``eps_cut``.
-    * Assumption (range): the paper handles a known interval ``[a, b]`` by
-      rescaling. Values outside ``value_range`` are clipped to it, so larger
-      deviations all count the same.
-    * Assumption (``delta``): the paper has no default; 0.002 is the default
-      of MOA and river.
-    * Deviation (``direction="up"``, not in the paper): the window shrinks as
-      usual, but drift is only signalled if the newer part has the larger
-      mean, i.e. the values rose. For runtime residuals: the algorithm got
-      slower than predicted, not faster.
-    * Assumption (variance): the "observed variance" of eq. 2.1 is the
-      population variance of the window.
-
-    Parameters
-    ----------
-    delta : float, default=0.002
-        Confidence parameter in ``(0, 1)``; smaller = fewer false alarms,
-        later detection.
-    value_range : tuple[float, float], default=(0.0, 1.0)
-        Interval ``(low, high)`` of the values; they are clipped to it and
-        rescaled to ``[0, 1]``. For log runtime residuals e.g.
-        ``(-math.log(10), math.log(10))`` (a factor of 10 either way).
-    bound : {"variance", "hoeffding"}, default="variance"
-        The threshold ``eps_cut`` (see above).
-    direction : {"both", "up"}, default="both"
-        ``"both"``: signal every change of the mean (paper). ``"up"``: only
-        increases.
-    imputation : CensoredImputer or None, default=None
-        Rule for censored values (lower bounds); ``None`` = use the bound.
-    random_state : int or None, default=None
-        Seed for stochastic imputation rules.
-
-    Attributes
-    ----------
-    width_ : int
-        Current length of the window.
-    estimate_ : float or None
-        Mean of the window on the input scale.
+    * Exact ADWIN, not the bucket-based ADWIN2: every split is checked, one
+      pass over the window per update.
+    * The oldest value is dropped one at a time, then all splits are tested
+      again; no minimum sub-window length.
+    * Values outside ``value_range`` are clipped, so larger deviations count
+      the same.
+    * ``delta=0.002`` is the MOA/river default (the paper has none).
+    * ``direction="up"`` (not in the paper) only signals when the newer part
+      has the larger mean: the algorithm got slower than predicted.
+    * The "observed variance" of eq. 2.1 is the population variance.
     """
 
     def __init__(
@@ -223,22 +156,7 @@ class ADWINDetector(_CensoredInput, AbstractScalarDriftDetector):
         return low + (high - low) * float(self._window().mean())
 
     def update(self, value: float, censored: bool = False) -> DriftSignal:
-        """
-        Add one value to the window and shrink it while a split differs.
-
-        Parameters
-        ----------
-        value : float
-            The statistic for the current instance.
-        censored : bool, default=False
-            ``True`` if ``value`` is a lower bound; see ``imputation``.
-
-        Returns
-        -------
-        DriftSignal
-            ``drift`` if the window shrank (for ``direction="up"``: because
-            the values rose); ``score`` = mean of the window.
-        """
+        """Add a value; drift if the window shrank (``"up"``: as values rose)."""
         resolved = self._resolve(value, censored)
         if resolved is None:
             return DriftSignal(drift=False, score=self.estimate_)
@@ -267,15 +185,8 @@ class ADWINDetector(_CensoredInput, AbstractScalarDriftDetector):
         self._end += 1
 
     def _split_differs(self, window: np.ndarray) -> tuple[bool, bool]:
-        """
-        Test every split of ``window``.
-
-        Returns
-        -------
-        tuple[bool, bool]
-            Whether some split reaches ``eps_cut``, and whether one of those
-            has the larger mean in its newer part.
-        """
+        """Whether some split reaches ``eps_cut``, and whether one of those
+        has the larger mean in its newer part."""
         n = len(window)
         sums = np.cumsum(window)
         n0 = np.arange(1, n)
@@ -296,63 +207,33 @@ class ADWINDetector(_CensoredInput, AbstractScalarDriftDetector):
 
 class EDDMDetector(_CensoredInput, AbstractScalarDriftDetector):
     """
-    EDDM: early drift detection on the distance between errors.
+    EDDM: early drift detection on the distance between errors (Baena-Garcia
+    et al., 2006).
 
-    EDDM is defined on a stream of classification errors. Here a value is an
-    *error* if it is above ``error_threshold``; with log runtime residuals
-    and the default ``log(2)``: the run took more than twice as long as
-    predicted. A 0/1 error stream can be passed as it is.
-
-    The distance between two errors is the number of instances from one error
-    to the next. With ``p`` their running mean and ``s`` their running
-    standard deviation, the detector stores the maximum of ``p + 2 s`` and
-    compares, at every error once ``min_errors`` errors have been seen::
+    A value above ``error_threshold`` is an error (default ``log(2)``: more
+    than twice as slow as predicted; a 0/1 stream works as it is). With ``p``
+    and ``s`` the running mean and sd of the distances between errors, at
+    every error once ``min_errors`` have been seen::
 
         ratio = (p + 2 s) / (p_max + 2 s_max)
         ratio < alpha  ->  warning
         ratio < beta   ->  drift
 
-    Errors getting closer together lower the ratio. After a drift the
-    detector starts from scratch.
-
-    Signal: ``score`` is the ratio at the last error (``None`` before the
-    first error), ``warning`` holds until an error brings the ratio back to
-    ``alpha`` or above.
+    Errors getting closer lower the ratio. ``score`` is the ratio at the
+    last error; ``warning`` holds until an error lifts it back to ``alpha``.
+    Defaults are the paper's (``alpha=0.95``, ``beta=0.90``, 30 errors).
 
     Assumptions and deviations
     --------------------------
-    * Deviation (real values): the threshold turning a value into an error is
-      not part of the paper. It is one-sided because a timeout can only show
-      that a run was slower than predicted.
-    * Assumption (first distance): the first error's distance is counted from
-      the start of the stream (or the last reset), as in river's and MOA's
-      implementation.
-    * Assumption (standard deviation): the sample standard deviation
-      (``n - 1``; 0 for a single distance), as in river.
-    * Assumption (maximum): ``p + 2 s`` is tracked from the first error on;
-      only the thresholds wait for ``min_errors`` errors. (river tracks the
-      maximum only after 30 instances and tests after more than 30 errors.)
-    * Assumption (after a drift): the paper resets ``p_max`` and ``s_max``
-      and learns a new model; here all statistics restart, including the
-      belief about censored values.
-    * Censored values are imputed (``imputation``) before the threshold. With
-      the default rule a timeout is an error only if its bound is above the
-      threshold.
-
-    Parameters
-    ----------
-    error_threshold : float, default=log(2)
-        A value above it counts as an error.
-    alpha : float, default=0.95
-        Warning threshold (paper: 0.95).
-    beta : float, default=0.90
-        Drift threshold (paper: 0.90); at most ``alpha``.
-    min_errors : int, default=30
-        Errors needed before the thresholds are tested (paper: 30).
-    imputation : CensoredImputer or None, default=None
-        Rule for censored values (lower bounds); ``None`` = use the bound.
-    random_state : int or None, default=None
-        Seed for stochastic imputation rules.
+    * The one-sided error threshold is not in the paper (a timeout can only
+      show a run was slower than predicted).
+    * The first distance counts from the start (or last reset), as in river
+      and MOA; ``s`` is the sample sd (0 for one distance), as in river.
+    * ``p + 2 s`` is tracked from the first error; only the tests wait for
+      ``min_errors`` (river waits 30 instances for the maximum).
+    * After a drift all statistics restart, including the censored belief.
+    * Censored values are imputed before the threshold; by default a timeout
+      is an error only if its bound is above the threshold.
     """
 
     def __init__(
@@ -390,21 +271,6 @@ class EDDMDetector(_CensoredInput, AbstractScalarDriftDetector):
         self._warning = False
 
     def update(self, value: float, censored: bool = False) -> DriftSignal:
-        """
-        Consume one value.
-
-        Parameters
-        ----------
-        value : float
-            The statistic for the current instance.
-        censored : bool, default=False
-            ``True`` if ``value`` is a lower bound; see ``imputation``.
-
-        Returns
-        -------
-        DriftSignal
-            ``drift`` and ``warning`` as defined above; ``score`` = ratio.
-        """
         resolved = self._resolve(value, censored)
         if resolved is None:
             return DriftSignal(False, self._warning, self._ratio)

@@ -1,9 +1,7 @@
 """Contextual, non-stationary bandit selectors (arms = algorithms).
 
-Baselines: :class:`UCBSelector`, :class:`ThompsonSamplingSelector`,
-:class:`LinUCBSelector`, :class:`LinTSSelector`. Each accepts the same
-components as :class:`AbstractContextualBandit`, so non-stationary variants are
-compositions, e.g.::
+Every preset accepts the components of :class:`AbstractContextualBandit`, so
+variants are compositions, e.g.::
 
     LinTSSelector(weighting=ExponentialDiscount(0.99))          # discounted LinTS
     ThompsonSamplingSelector(
@@ -12,20 +10,9 @@ compositions, e.g.::
     LinTSSelector(confidence=GaussianConfidence())              # fixed confidence
     LinTSSelector(weighting=ConfidenceWeighting(model))         # re-estimated
 
-Non-stationary UCB presets: :class:`DiscountedUCBSelector` (DS-UCB) and
-:class:`SlidingWindowUCBSelector` (SW-UCB). Non-stationary TS presets:
-:class:`DiscountedTSSelector` (DS-TS),
-:class:`SlidingWindowTSSelector` (SW-TS) and :class:`FDSWTSSelector`
-(f-dsw TS, two traces per arm combined by ``aggregate``).
-
-Clustered: :class:`DTSOCSelector` (DTS-OC, online k-means + discounted Beta TS
-per cluster, fuzzy-penalised updates).
-
-Censored runs: ``imputation=`` (see :mod:`asf.online.imputation`, Tornede et
-al.) replaces the PAR-k penalty by an imputed reward.
-
-Planned extensions: flow-based ``ConfidenceModel`` and Normal-Inverse-Gamma
-``Posterior`` (FC-TS).
+Presets: UCB, TS, LinUCB, LinTS; DS-UCB, SW-UCB, DS-TS, SW-TS, f-dsw TS
+(non-stationary); DTS-OC (clustered). ``imputation=`` (Tornede et al.)
+replaces the PAR-k penalty of censored runs by an imputed reward.
 """
 
 from asf.online.selectors.bandits.base import AbstractContextualBandit

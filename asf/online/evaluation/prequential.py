@@ -66,37 +66,16 @@ _PARQUET_ENGINE = "pyarrow"
 @dataclass
 class OnlineResult:
     """
-    Outcome of one prequential run.
+    Outcome of one prequential run; ``save``/``load`` use the on-disk format
+    in ``docs/features/online_selection.md`` (:data:`SCHEMA_VERSION`).
 
-    The on-disk format (``save`` / ``load``) is documented in
-    ``docs/features/online_selection.md`` (schema version
-    :data:`SCHEMA_VERSION`).
-
-    Attributes
-    ----------
-    steps : pd.DataFrame
-        One row per streamed instance, columns :data:`STEP_COLUMNS`. Among
-        them: ``primary`` (selected algorithm), ``extras`` and ``runs`` (JSON
-        strings), ``user_cost`` (PAR-k of what the user gets under
-        ``result_mode``), ``cost_primary`` and ``cost_best_of_scheduled``
-        (both result modes), ``compute_cost`` (summed, capped runtimes of ALL
-        executed algorithms), ``vbs_cost``, ``sbs_cost`` (single best on the
-        evaluated stream, in hindsight), ``sbs_cost_warmstart``,
-        ``retrained``, the prediction record (``pred_*``), detector output
-        and per-step wall-clock seconds.
-    retrain_steps, drift_steps : list[int]
-        Stream positions (0-based) of retrainings / drift signals.
-    retrain_seconds : float
-        Total wall-clock time the selector spent retraining.
-    drift_points : tuple[int, ...]
-        Injected drift points of the stream (ground truth).
-    maximize : bool
-    transition_intervals : tuple[tuple[int, int], ...]
-        Half-open gradual-shift intervals in the evaluated part of the stream.
-        Point-based detection metrics measure delay from onset, not from the
-        completion of a gradual change.
-    meta : dict
-        Everything written to ``meta.json`` (provenance, configuration).
+    ``steps`` has one row per streamed instance (:data:`STEP_COLUMNS`): the
+    primary and extra runs, the cost under both result modes and as
+    ``user_cost``, ``compute_cost`` (summed capped runtimes of all runs),
+    VBS and SBS cost (SBS in hindsight on the evaluated stream), the
+    prediction record, detector output and per-step seconds. ``meta`` is
+    everything written to ``meta.json``. Detection metrics measure delay from
+    the onset of a gradual change, not its completion.
     """
 
     steps: pd.DataFrame
@@ -110,14 +89,9 @@ class OnlineResult:
 
     def summary(self, detection_tolerance: int = 100) -> dict[str, float]:
         """
-        Aggregate numbers for result tables.
-
-        ``mean_user_cost`` and ``closed_gap`` follow the run's result mode;
-        both modes are always reported as well (``*_primary``,
-        ``*_best_of_scheduled``). ``closed_gap*`` use the single best
-        algorithm on the evaluated stream (hindsight), so warm- and cold-start
-        runs are comparable; ``closed_gap_warmstart`` uses the single best on
-        the warm-start prefix (NaN for cold starts).
+        Aggregate numbers for result tables. ``mean_user_cost`` and
+        ``closed_gap`` follow the result mode; both modes are reported too.
+        ``closed_gap_warmstart`` uses the warm-start SBS (NaN on cold starts).
         """
         s = self.steps
         mx = self.maximize
@@ -161,22 +135,8 @@ class OnlineResult:
     # ------------------------------------------------------------------ io
     def save(self, path: str | Path, overwrite: bool = False) -> Path:
         """
-        Write the result to the directory ``path``.
-
-        Creates ``path/steps.parquet`` (per-step frame) and ``path/meta.json``
-        (everything else). Requires ``pyarrow`` (``pip install asf[online]``).
-
-        Parameters
-        ----------
-        path : str or Path
-            Target directory (created if missing).
-        overwrite : bool, default=False
-            Replace existing result files in ``path``.
-
-        Returns
-        -------
-        Path
-            The directory written to.
+        Write ``steps.parquet`` and ``meta.json`` to the directory ``path``
+        (needs ``pyarrow``).
         """
         _require_parquet_engine()
         out = Path(path)
@@ -253,65 +213,26 @@ def run_prequential(
     """
     Evaluate an online selector on a stream, test-then-train.
 
-    Protocol per instance:
+    Per instance: ``propose`` -> "run" the schedule on the hidden ground truth
+    (a run stops at ``min(budget, cutoff)`` and is censored if it does not
+    finish before) -> score -> ``observe``. The first ``n_warmstart``
+    instances are a fully observed warm start (0 = cold start, rejected for
+    selectors with ``SUPPORTS_COLD_START = False``).
 
-    1. ``selector.propose(features)`` -> schedule (primary + gated extras).
-    2. The evaluator "runs" the scheduled algorithms by looking up the hidden
-       ground truth. A run stops at ``min(budget, cutoff)``; if the true runtime
-       exceeds that, the run is *censored*. (For non-runtime objectives such as
-       bin-packing quality use ``cutoff=inf``; nothing is ever censored.)
-    3. Scoring, then ``selector.observe(...)``.
+    The user gets the primary result (``"primary"``) or the best scheduled
+    one (``"best_of_scheduled"``, parallel runs as in Rook et al.);
+    ``result_mode=None`` takes the selector's ``RESULT_MODE``. Both are
+    logged. ``compute_cost`` is reported separately (not on the PAR-k scale).
 
-    For minimization, ``user_cost`` is the PAR-k score of what the user receives.
-    For ``selector.maximize=True``, it is the raw quality score (higher is better)
-    and the stream must have ``cutoff=inf`` and no positive run budgets: quality
-    scores alone cannot establish whether a timed run finished. In that mode
-    ``compute_cost`` is NaN because resource use cannot be inferred from scores.
+    SBS is the best single algorithm on the *evaluated* stream (hindsight);
+    the warm-start SBS is logged as ``sbs_cost_warmstart``. VBS ties go to the
+    stream's algorithm order.
 
-    The result the user receives depends on the scoring mode:
+    With ``selector.maximize=True`` costs are raw quality scores; this needs
+    ``cutoff=inf`` and no run budgets (scores reveal no runtimes), and
+    ``compute_cost`` is NaN.
 
-    * ``"primary"``: the first scheduled algorithm's result.
-    * ``"best_of_scheduled"``: the best result among all scheduled algorithms
-      (minimum cost or maximum quality; parallel runs, as in Rook et al.).
-
-    Both are logged per step (``cost_primary``, ``cost_best_of_scheduled``);
-    ``user_cost`` is the one selected by ``result_mode``, whose default is the
-    selector's ``RESULT_MODE``. ``compute_cost`` is the summed capped runtime
-    of all executed algorithms (the resources spent), reported separately
-    because it is not on the same scale as PAR-k.
-
-    SBS is the single algorithm with the best mean score on the *evaluated*
-    stream (hindsight), in both protocols. For warm starts, the single best
-    on the warm-start prefix is logged as ``sbs_cost_warmstart``. VBS is the
-    per-instance oracle; ties are broken by the stream's algorithm order.
-
-    Two protocols are supported:
-
-    * ``"warm"`` (``n_warmstart >= 1``): the selector is fitted on a fully
-      observed prefix; offline AS methods need this.
-    * ``"cold"`` (``n_warmstart == 0``): the selector starts without data
-      (fitted on empty frames carrying only algorithm and feature names).
-      Selectors with ``SUPPORTS_COLD_START = False`` are rejected.
-
-    Parameters
-    ----------
-    selector : AbstractOnlineSelector
-        Unfitted selector; it is fitted on the warm-start prefix here.
-    stream : InstanceStream
-        Full stream; the first ``n_warmstart`` instances are the warm start.
-    n_warmstart : int, default=0
-        Size of the fully observed warm-start prefix; 0 = cold start.
-    par_factor : float, default=10.0
-        PAR-k factor for unsolved runs.
-    result_mode : {"primary", "best_of_scheduled"} or None
-        Scoring mode; ``None`` uses ``selector.RESULT_MODE``.
-    fit_kwargs : dict or None
-        Extra keyword arguments for ``selector.fit``.
-    stream_seed : int or None, default=None
-        Seed the stream was generated or shuffled with; stored as
-        ``meta["stream"]["seed"]``.
-    metadata : Mapping or None, default=None
-        Free-form, JSON-serialisable information stored as ``meta["extra"]``.
+    ``stream_seed`` and ``metadata`` are only stored in the result's meta.
     """
     mode = result_mode or selector.RESULT_MODE
     if mode not in ("primary", "best_of_scheduled"):

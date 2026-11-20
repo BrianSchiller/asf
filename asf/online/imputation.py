@@ -1,14 +1,9 @@
 """
 Imputation of right-censored runtimes (Tornede et al., 2022).
 
-A run that hits its budget is *right-censored*: its true runtime is unknown,
-only that it is at least the budget. Online selectors still want to learn from
-such runs. The rules in this module replace a censored value by a number (or
-drop it), given the selector's current belief about the value.
-
-All rules work on the scale of the selector's model (e.g. log runtime, or the
-negated bandit reward) and assume the true value ``y`` satisfies
-``y >= bound``. The belief is a normal distribution ``N(mean, sd**2)``:
+A run stopped at its budget only tells us that the true value ``y`` is at
+least ``bound``. These rules replace it by a number (or drop it), given the
+selector's belief ``N(mean, sd**2)`` on its model's scale:
 
 * :class:`CutoffImputer` -- ``bound`` (the "impute by the cutoff" rule).
 * :class:`DropCensored` -- ``NaN``, i.e. ignore the run (BlindUCB).
@@ -36,14 +31,9 @@ class CensoredImputer(ABC):
     """
     Rule that fills in right-censored values (true value ``>= bound``).
 
-    Attributes
-    ----------
-    USES_MODEL : bool
-        Whether the rule needs ``mean`` and ``sd`` (selectors skip computing
-        them otherwise).
-    PREDICTIVE : bool
-        Whether ``sd`` should be the spread of a new *observation* (model
-        uncertainty plus noise) rather than of the model's mean prediction.
+    ``USES_MODEL``: the rule needs ``mean`` and ``sd``. ``PREDICTIVE``: ``sd``
+    should be that of a new observation (model uncertainty plus noise), not
+    of the mean prediction.
     """
 
     USES_MODEL: bool = True
@@ -57,25 +47,8 @@ class CensoredImputer(ABC):
         sd: ArrayLike,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """
-        Impute censored values.
-
-        Parameters
-        ----------
-        bound : array-like
-            Lower bound of each true value (the censoring threshold).
-        mean : array-like
-            Mean of the current belief about each value.
-        sd : array-like
-            Standard deviation of the belief (``>= 0``, may be ``inf``).
-        rng : np.random.Generator
-            Source of randomness (only used by stochastic rules).
-
-        Returns
-        -------
-        np.ndarray
-            Imputed values, at least ``bound``; ``NaN`` means "drop the value".
-        """
+        """Imputed values (at least ``bound``; ``NaN`` = drop). ``sd >= 0``,
+        may be ``inf`` (no belief yet)."""
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -113,21 +86,13 @@ class DropCensored(CensoredImputer):
 
 class ExpectedImputer(CensoredImputer):
     """
-    Impute the conditional mean ``E[y | y >= bound]`` of ``N(mean, sd**2)``.
-
-    This is the mean of a normal distribution truncated from below::
+    Impute ``E[y | y >= bound]`` of ``N(mean, sd**2)``, the truncated mean::
 
         mean + sd * phi(a) / (1 - Phi(a)),    a = (bound - mean) / sd
 
-    computed in log space so that far tails stay finite. It is the
-    expected-value augmentation of Buckley and James (1979) that Tornede et
-    al. describe in the text, and one step of Schmee and Hahn (1979).
-
-    Edge cases: ``sd == 0`` gives ``max(mean, bound)``; ``sd == inf`` (no
-    information yet) gives ``bound``. The result is never below ``bound``.
-
-    Since it conditions a new observation, ``sd`` should include the noise
-    (``PREDICTIVE = True``).
+    (computed in log space). Buckley and James (1979), as described by
+    Tornede et al.; one step of Schmee and Hahn (1979). ``sd == 0`` gives
+    ``max(mean, bound)``, ``sd == inf`` gives ``bound``.
     """
 
     PREDICTIVE = True
@@ -153,21 +118,12 @@ class ExpectedImputer(CensoredImputer):
 
 class SampledImputer(CensoredImputer):
     """
-    Impute a draw from ``N(mean, sd**2)`` that lies above ``bound``.
+    Impute a draw from ``N(mean, sd**2)`` above ``bound``.
 
-    Rejection sampling as in Algorithm 1 (lines 17-20) of Tornede et al. and
-    their code: draw up to ``max_tries`` times and keep the first draw
-    ``> bound``; if none is, impute ``bound``. In their code ``sd`` is the
-    spread of the model's mean prediction (the parameter posterior), so
-    ``PREDICTIVE = False``.
-
-    Edge cases: ``sd == inf`` gives ``bound``; ``sd == 0`` gives ``mean`` if
-    it is above ``bound``, else ``bound``.
-
-    Parameters
-    ----------
-    max_tries : int, default=20
-        Number of draws before falling back to ``bound`` (their code: 20).
+    Rejection sampling as in Tornede et al. (Algorithm 1, lines 17-20, and
+    their code): the first of ``max_tries`` draws above ``bound``, else
+    ``bound``. Their ``sd`` is that of the mean prediction, hence
+    ``PREDICTIVE = False``. ``sd == inf`` gives ``bound``.
     """
 
     def __init__(self, max_tries: int = 20) -> None:

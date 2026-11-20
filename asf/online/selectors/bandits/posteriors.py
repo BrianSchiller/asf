@@ -1,15 +1,9 @@
-"""Per-arm reward models (what the bandit believes about one arm).
+"""Per-arm Bayesian reward models given the model input ``x``.
 
-A posterior is a Bayesian model of an arm's reward given the model input ``x``.
-Every posterior supports two ways of being built, so the same class serves
-both computation modes of the bandit:
-
-* incrementally -- ``update`` one weighted observation at a time and
-  ``decay`` all accumulated evidence (exponential forgetting), or
-* from scratch -- ``fit`` a weighted batch (used when the weights of past
-  observations depend on the current instance, e.g. nearest neighbours).
-
-The exploration policies only need ``mean``, ``width`` and ``sample``.
+Each can be built incrementally (``update`` one weighted observation,
+``decay`` all evidence) or from scratch (``fit`` a weighted batch, when past
+weights depend on the current instance). Policies use ``mean``, ``width``
+and ``sample``.
 """
 
 from __future__ import annotations
@@ -21,12 +15,7 @@ import numpy as np
 
 class Posterior(ABC):
     """
-    Abstract posterior over one arm's reward.
-
-    Parameters
-    ----------
-    dim : int
-        Length of the model input ``x``.
+    Abstract posterior over one arm's reward (input length ``dim``).
     """
 
     def __init__(self, dim: int) -> None:
@@ -69,13 +58,10 @@ class Posterior(ABC):
         size: int | None = None,
     ) -> float | np.ndarray:
         """
-        Draw the expected reward at ``x`` from the (scaled) posterior.
+        Draw the expected reward at ``x`` (``size`` draws at once if given).
 
-        For a Gaussian posterior, sampling a parameter vector and taking its
-        prediction at a single ``x`` is equivalent in distribution to drawing
-        ``N(mean(x), (scale * width(x))**2)``, which is what is done here.
-        Non-Gaussian posteriors (e.g. Normal-Inverse-Gamma) override this.
-        With ``size`` an array of that many draws is returned (one numpy call).
+        For a Gaussian posterior this equals sampling parameters and
+        predicting at ``x``: ``N(mean(x), (scale * width(x))**2)``.
         """
         sd = self.width(x)
         if not np.isfinite(sd):  # no information yet: always worth a try
@@ -90,22 +76,9 @@ class BayesianLinearRegression(Posterior):
     Weighted Bayesian linear regression with known noise variance.
 
     Prior ``theta ~ N(0, noise_var / prior_precision * I)``, likelihood
-    ``r ~ N(x @ theta, noise_var / w)`` for an observation of weight ``w``.
-    The posterior is ``N(theta_hat, noise_var * A^-1)`` with::
-
-        A = prior_precision * I + sum_i w_i x_i x_i^T
-        b = sum_i w_i r_i x_i,      theta_hat = A^-1 b
-
-    which is exactly the ridge estimate used by LinUCB and LinTS.
-
-    Parameters
-    ----------
-    dim : int
-        Length of ``x``.
-    prior_precision : float, default=1.0
-        Ridge regularisation ``lambda`` (must be > 0).
-    noise_var : float, default=1.0
-        Reward noise variance ``sigma^2``; scales ``width``.
+    ``r ~ N(x @ theta, noise_var / w)``; posterior ``N(A^-1 b, noise_var
+    A^-1)`` with ``A = prior_precision I + sum w x x^T``, ``b = sum w r x``:
+    the ridge estimate of LinUCB and LinTS. ``prior_precision > 0``.
     """
 
     def __init__(
@@ -168,22 +141,10 @@ class BayesianLinearRegression(Posterior):
 
 class GaussianPosterior(Posterior):
     """
-    Context-free Gaussian posterior of an arm's mean reward.
-
-    The one-dimensional special case of :class:`BayesianLinearRegression`
-    with ``x = [1]``: precision ``lambda + sum w``, mean
-    ``sum(w r) / precision``. Unlike the linear version it allows
-    ``prior_precision=0``; an unplayed arm then has infinite width, so UCB
-    tries every arm once (classic UCB1 behaviour).
-
-    Parameters
-    ----------
-    dim : int
-        Ignored except for validation (the input is always ``[1]``).
-    prior_precision : float, default=1.0
-        Pseudo-count of the zero-mean prior (``>= 0``).
-    noise_var : float, default=1.0
-        Reward noise variance.
+    Context-free Gaussian posterior of an arm's mean reward: the 1-d case of
+    :class:`BayesianLinearRegression` (``x = [1]``, ``dim`` ignored), but
+    ``prior_precision=0`` is allowed: an unplayed arm then has infinite
+    width, so UCB tries every arm once (classic UCB1).
     """
 
     def __init__(
@@ -234,17 +195,8 @@ class BetaPosterior(Posterior):
     """
     Beta-Bernoulli posterior for rewards in ``[0, 1]`` (context-free).
 
-    Rewards are counted fractionally: ``alpha += w * r``, ``beta += w * (1 - r)``.
-    The posterior is ``Beta(prior_alpha + alpha, prior_beta + beta)``; with the
-    default uniform prior this is the ``Beta(alpha + 1, beta + 1)`` of f-dsw TS.
-    ``decay`` discounts the counts but not the prior.
-
-    Parameters
-    ----------
-    dim : int
-        Ignored (the input is always ``[1]``).
-    prior_alpha, prior_beta : float, default=1.0
-        Pseudo-counts of the prior (must be > 0).
+    Fractional counts ``alpha += w r``, ``beta += w (1 - r)``; the prior
+    pseudo-counts (default uniform, as in f-dsw TS) are never decayed.
     """
 
     def __init__(

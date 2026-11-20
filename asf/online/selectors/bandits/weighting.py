@@ -1,22 +1,13 @@
 """Which past observations count, and how much (the non-stationarity knob).
 
-A :class:`Weighting` returns a multiplicative weight for every stored
-observation of an arm, given the instance that is being decided on now. The
-final weight of an observation is::
+A :class:`Weighting` multiplies the weight stored with each observation (e.g.
+a confidence score) given the instance decided on now. Weightings combine
+with ``*``, e.g. ``ExponentialDiscount(0.99) * NearestNeighbours(50)``.
 
-    stored weight (fixed at arrival, e.g. a confidence score)
-        x  weighting.weights(z_query, t, steps, Z)
-
-Weightings combine with ``*``, e.g. ``ExponentialDiscount(0.99) *
-NearestNeighbours(50)`` (a discounted nearest-neighbour window, as in DTS-OC).
-
-Time convention: observations carry the clock value ``s`` at which they
-arrived (0, 1, 2, ...; warm-start rows first). A decision at clock ``t`` sees
-observations with ``s < t``; the newest has age ``t - 1 - s = 0``.
-
-Weightings that depend only on age and decay geometrically are *incremental*:
-the bandit can then keep running sums and call ``Posterior.decay`` once per
-step instead of refitting from the history (see ``decay_factor``).
+Observations carry the clock ``s`` at arrival (warm start first); a decision
+at clock ``t`` sees ``s < t``, the newest with age ``t - 1 - s = 0``.
+Weightings that decay geometrically with age are *incremental*: the bandit
+can keep running posteriors and ``decay`` them instead of refitting.
 """
 
 from __future__ import annotations
@@ -53,23 +44,8 @@ class Weighting(ABC):
         self, z: np.ndarray, t: int, steps: np.ndarray, Z: np.ndarray
     ) -> np.ndarray:
         """
-        Weights of stored observations for a decision at clock ``t``.
-
-        Parameters
-        ----------
-        z : np.ndarray
-            Feature vector of the instance being decided on, shape ``(d,)``.
-        t : int
-            Current clock value.
-        steps : np.ndarray
-            Arrival clock of each stored observation, shape ``(n,)``.
-        Z : np.ndarray
-            Feature vectors of the stored observations, shape ``(n, d)``.
-
-        Returns
-        -------
-        np.ndarray
-            Non-negative weights, shape ``(n,)``.
+        Non-negative weights of stored observations (arrival ``steps``,
+        feature vectors ``Z``) for deciding on ``z`` at clock ``t``.
         """
 
     def __mul__(self, other: "Weighting") -> "ProductWeighting":
@@ -91,13 +67,8 @@ class Uniform(Weighting):
 
 class ExponentialDiscount(Weighting):
     """
-    Weight ``gamma ** age`` (discounted UCB / TS / LinUCB).
-
-    Parameters
-    ----------
-    gamma : float
-        Discount per step, in ``(0, 1]``. The effective memory is roughly
-        ``1 / (1 - gamma)`` observations.
+    Weight ``gamma ** age`` (discounted UCB / TS / LinUCB); memory roughly
+    ``1 / (1 - gamma)`` observations.
     """
 
     incremental = True
@@ -119,16 +90,9 @@ class ExponentialDiscount(Weighting):
 
 class PullDiscount(ExponentialDiscount):
     """
-    Weight ``gamma ** k``, where ``k`` counts the newer observations of the same
-    arm in the same cell (discount per pull, as in DTS-OC).
-
-    In contrast to :class:`ExponentialDiscount` (discount per step, all arms),
-    an arm that is not played keeps its posterior unchanged.
-
-    Parameters
-    ----------
-    gamma : float
-        Discount per pull, in ``(0, 1]``.
+    Weight ``gamma ** k`` with ``k`` the newer observations of the same arm in
+    the same cell (per pull, as in DTS-OC): an unplayed arm keeps its
+    posterior, unlike :class:`ExponentialDiscount`.
     """
 
     decay_on_update = True
@@ -143,9 +107,7 @@ class PullDiscount(ExponentialDiscount):
 
 class SlidingWindow(Weighting):
     """
-    Only the observations of the last ``size`` steps count (SW-UCB / SW-TS).
-
-    The window is measured in global steps (instances), not per arm.
+    Only the last ``size`` global steps count (SW-UCB / SW-TS).
     """
 
     def __init__(self, size: int) -> None:
@@ -161,11 +123,8 @@ class SlidingWindow(Weighting):
 
 class LastPulls(Weighting):
     """
-    Only the ``n`` most recent observations *of each arm* count.
-
-    Unlike :class:`SlidingWindow` (last ``size`` global steps), an arm that is
-    rarely played keeps its last ``n`` results however old they are. This is
-    the "hot trace" of f-dsw TS.
+    Only the last ``n`` observations *of each arm* count, however old (the
+    "hot trace" of f-dsw TS).
     """
 
     def __init__(self, n: int) -> None:
@@ -183,19 +142,9 @@ class LastPulls(Weighting):
 
 class NearestNeighbours(Weighting):
     """
-    Only the ``k`` stored observations closest to the current instance count.
-
-    Distances are Euclidean on the (standardised) feature vectors ``z``. This
-    replaces a *time* window by a *feature-space* window: an arm's posterior is
-    built from how it did on similar instances.
-
-    When combined with other weightings, the ``k`` neighbours are chosen among
-    all stored observations of the arm, before the other weights apply.
-
-    Parameters
-    ----------
-    k : int
-        Neighbourhood size (per arm).
+    Only the ``k`` observations nearest to the current instance count
+    (Euclidean on ``z``): a feature-space instead of a time window. Chosen
+    among all of the arm's observations, before other weights apply.
     """
 
     def __init__(self, k: int) -> None:
@@ -218,18 +167,10 @@ class NearestNeighbours(Weighting):
 
 class ConfidenceWeighting(Weighting):
     """
-    Weight each observation by a confidence model's *current* score.
-
-    In contrast to a confidence weight fixed at arrival (the bandit's
-    ``confidence`` argument), the whole history is re-scored at every
-    decision, so observations are re-weighted as the model learns -- e.g. a
-    flow model whose density estimate follows the drifting distribution.
-
-    Parameters
-    ----------
-    model : ConfidenceModel
-        Scores feature vectors; it is fitted on the warm start and updated with
-        every streamed instance through this weighting.
+    Weight each observation by a confidence model's *current* score: the
+    history is re-scored at every decision as the model (updated with every
+    instance through this weighting) learns. Compare the bandit's
+    ``confidence`` argument, which fixes the weight at arrival.
     """
 
     def __init__(self, model: ConfidenceModel) -> None:
