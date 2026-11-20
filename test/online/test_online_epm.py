@@ -164,7 +164,9 @@ def test_ucb_gamma_flips_the_choice(fitted: OnlineEPMSelector) -> None:
 
 def test_epsilon_greedy_probabilities() -> None:
     def frequency_of_a(epsilon: float) -> float:
-        sel = make_selector(strategy="epsilon_greedy", epsilon=epsilon)
+        sel = make_selector(
+            strategy="epsilon_greedy", epsilon=epsilon, uncertainty=None
+        )
         sel.fit(*frames([[5.0, 50.0], [6.0, 40.0]]))
         inject(sel, {"a": (1.0, 0.0), "b": (2.0, 0.0)})
         return float(
@@ -317,7 +319,7 @@ def test_capability_hooks(stream: InstanceStream) -> None:
         make_selector(drift_response=ReweightResponse(0.5)).fit(*frames([[5.0, 50.0]]))
     make_selector(drift_response=ResetResponse())  # accepted
 
-    sel = make_selector(retrain_every=25)
+    sel = make_selector(retrain_every=25, uncertainty=None)
     result = run_prequential(sel, stream, n_warmstart=20)
     assert len(result.retrain_steps) == 4
     assert set(np.diff(result.retrain_steps)) == {25}
@@ -341,7 +343,7 @@ def test_prequential_warm_and_cold(stream: InstanceStream, tmp_path: Any) -> Non
 
 
 def test_all_data_upper_bound_runs_everything(stream: InstanceStream) -> None:
-    sel = make_selector(gate=AllNomineesGate())
+    sel = make_selector(gate=AllNomineesGate(), uncertainty=None)
     result = run_prequential(sel, stream, n_warmstart=20, result_mode="primary")
     assert (result.steps["n_runs"] == 2).all()
     assert sel.buffer is not None and sel.buffer.performance().notna().all().all()
@@ -349,21 +351,10 @@ def test_all_data_upper_bound_runs_everything(stream: InstanceStream) -> None:
 
 @pytest.mark.slow
 def test_learns_on_the_toy_stream(stream: InstanceStream) -> None:
-    sel = make_selector(update_every=1)
+    sel = make_selector(update_every=1, uncertainty=None)
     result = run_prequential(sel, stream, n_warmstart=40)
     before_drift = result.steps.iloc[: 80 - 40]
     assert (before_drift["user_cost"] == before_drift["vbs_cost"]).mean() > 0.8
-
-
-@pytest.mark.slow
-def test_determinism(stream: InstanceStream) -> None:
-    def run(seed: int) -> pd.DataFrame:
-        sel = make_selector(strategy="epsilon_greedy", epsilon=0.3, random_state=seed)
-        cols = ["primary", "pred_runtime", "pred_uncertainty", "pred_score"]
-        return run_prequential(sel, stream, n_warmstart=10).steps[cols]
-
-    pd.testing.assert_frame_equal(run(3), run(3))
-    assert not run(3)["primary"].equals(run(4)["primary"])
 
 
 class _Recorder(AbstractScalarDriftDetector):

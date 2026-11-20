@@ -7,52 +7,11 @@ import pandas as pd
 import pytest
 
 from asf.online.base import Observation
-from asf.online.drift import AbstractDriftDetector, DriftSignal
 from asf.online.evaluation import run_prequential
 from asf.online.selectors import OnlinePairwiseSelector
 from asf.online.streams.stream import InstanceStream
 
-ALGOS = ["a", "b", "c"]
-
-
-def covariate_shift_stream(
-    n_before: int = 150, n_after: int = 150, seed: int = 0
-) -> InstanceStream:
-    """Region 1 (f0 ~ N(0,1)): a is best. Region 2 (f0 ~ N(8,1)): b is best."""
-    rng = np.random.default_rng(seed)
-    f0 = np.concatenate([rng.normal(0, 1, n_before), rng.normal(8, 1, n_after)])
-    x = np.column_stack([f0, rng.normal(size=len(f0))])
-    perf = np.where(
-        (np.arange(len(f0)) < n_before)[:, None], [[5, 50, 20]], [[50, 5, 20]]
-    ).astype(float)
-    idx = pd.Index([f"i{k}" for k in range(len(f0))])
-    return InstanceStream(
-        pd.DataFrame(x, index=idx, columns=["f0", "f1"]),
-        pd.DataFrame(perf, index=idx, columns=ALGOS),
-        cutoff=1000.0,
-        drift_points=(n_before,),
-    )
-
-
-class _ScriptedDetector(AbstractDriftDetector):
-    """Signals drift at fixed update counts; records what it was fitted on."""
-
-    def __init__(self, drift_at: set[int]) -> None:
-        self.drift_at = drift_at
-        self.n_updates = 0
-        self.fit_sizes: list[int] = []
-
-    def fit(
-        self, features: pd.DataFrame, performance: pd.DataFrame | None = None
-    ) -> "_ScriptedDetector":
-        self.fit_sizes.append(len(features))
-        return self
-
-    def update(
-        self, features: pd.DataFrame, performance: pd.DataFrame | None = None
-    ) -> DriftSignal:
-        self.n_updates += 1
-        return DriftSignal(drift=self.n_updates in self.drift_at)
+from .conftest import ScriptedDetector, two_region_stream
 
 
 def _observe_all(sel: OnlinePairwiseSelector, row: pd.DataFrame, rts: dict) -> None:
@@ -60,7 +19,7 @@ def _observe_all(sel: OnlinePairwiseSelector, row: pd.DataFrame, rts: dict) -> N
 
 
 def test_reference_period_samples_random_pairs_then_trains() -> None:
-    stream = covariate_shift_stream()
+    stream = two_region_stream()
     sel = OnlinePairwiseSelector(reference_period=20, random_state=0)
     sel.fit(stream.features.iloc[:0], stream.performance.iloc[:0])
     seen_pairs = set()
@@ -81,7 +40,7 @@ def test_reference_period_samples_random_pairs_then_trains() -> None:
 
 
 def test_pair_without_comparison_uses_random_predictor() -> None:
-    stream = covariate_shift_stream()
+    stream = two_region_stream()
     sel = OnlinePairwiseSelector(reference_period=1, random_state=0)
     sel.fit(stream.features.iloc[:0], stream.performance.iloc[:0])
     item = next(iter(stream))
@@ -103,7 +62,7 @@ def test_labels_follow_at_least_as_good_with_ties_to_first() -> None:
 
 
 def test_error_guided_probabilities_are_inverse_to_accuracy() -> None:
-    stream = covariate_shift_stream()
+    stream = two_region_stream()
     sel = OnlinePairwiseSelector(reference_period=0, random_state=0)
     sel.fit(stream.features.iloc[:0], stream.performance.iloc[:0])
     sel.pair_accuracy_[0, 1] = sel.pair_accuracy_[1, 0] = 0.5
@@ -115,7 +74,7 @@ def test_error_guided_probabilities_are_inverse_to_accuracy() -> None:
 
 
 def test_warm_start_trains_immediately() -> None:
-    stream = covariate_shift_stream()
+    stream = two_region_stream()
     sel = OnlinePairwiseSelector(random_state=0)
     sel.fit(stream.features.iloc[:60], stream.performance.iloc[:60])
     assert sel._reference_remaining == 0
@@ -124,8 +83,8 @@ def test_warm_start_trains_immediately() -> None:
 
 
 def test_drift_signal_retrains_on_full_history_and_resets_detector() -> None:
-    stream = covariate_shift_stream()
-    detector = _ScriptedDetector(drift_at={30})
+    stream = two_region_stream()
+    detector = ScriptedDetector(drift_at={30})
     sel = OnlinePairwiseSelector(reference_period=40, detector=detector, random_state=0)
     res = run_prequential(sel, stream, n_warmstart=0)
     assert res.drift_steps == res.retrain_steps and len(res.drift_steps) == 1
@@ -137,14 +96,14 @@ def test_drift_signal_retrains_on_full_history_and_resets_detector() -> None:
 
 
 def test_retraining_recovers_from_covariate_shift() -> None:
-    stream = covariate_shift_stream()
+    stream = two_region_stream()
     kw = dict(reference_period=40, random_state=0)
     static = run_prequential(OnlinePairwiseSelector(**kw), stream)  # never retrains
     # Two signals (~30 and ~80 instances into region 2). A single retraining is
     # not enough here: right after the shift only pairs involving the selected
     # algorithm get compared, so the pair (b, c) still carries only region-1
     # evidence (c beats b) until a later retraining sees the new comparisons.
-    detector = _ScriptedDetector(drift_at={140, 190})
+    detector = ScriptedDetector(drift_at={140, 190})
     adaptive = run_prequential(OnlinePairwiseSelector(detector=detector, **kw), stream)
     last = slice(len(static.steps) - 50, None)
     assert adaptive.steps["user_cost"].iloc[last].mean() == pytest.approx(5.0, abs=0.5)
@@ -156,14 +115,14 @@ def test_retraining_recovers_from_covariate_shift() -> None:
 
 
 def test_periodic_policy_without_detector() -> None:
-    stream = covariate_shift_stream(60, 60)
+    stream = two_region_stream(60, 60)
     sel = OnlinePairwiseSelector(reference_period=20, retrain_every=25, random_state=0)
     res = run_prequential(sel, stream)
     assert len(res.retrain_steps) >= 3 and res.drift_steps == []
 
 
 def test_best_of_scheduled_is_default_and_two_runs_per_instance() -> None:
-    stream = covariate_shift_stream(60, 60)
+    stream = two_region_stream(60, 60)
     sel = OnlinePairwiseSelector(reference_period=20, random_state=0)
     res = run_prequential(sel, stream)
     assert (res.steps["n_runs"] == 2).all()
@@ -190,7 +149,7 @@ def test_invalid_configuration() -> None:
         OnlinePairwiseSelector(n_additional=0)
     with pytest.raises(ValueError):
         OnlinePairwiseSelector(additional_strategy="nope")  # type: ignore[arg-type]
-    stream = covariate_shift_stream()
+    stream = two_region_stream()
     two = stream.performance[["a", "b"]]
     with pytest.raises(ValueError):
         OnlinePairwiseSelector(n_additional=2).fit(

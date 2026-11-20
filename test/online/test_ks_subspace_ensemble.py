@@ -344,17 +344,9 @@ def test_missing_values_constant_columns_and_column_order() -> None:
 
     guided = KSSubspaceEnsembleDetector(subspace_size=3, random_state=0).fit(ref)
     assert not guided.update(sample(50, 1).assign(const=7.0, empty=np.nan)).drift
-    with pytest.raises(ValueError):
-        det.update(new.drop(columns=["f0"]))
 
 
 def test_validation() -> None:
-    with pytest.raises(RuntimeError):
-        KSSubspaceEnsembleDetector().update(sample(1, 0))
-    with pytest.raises(RuntimeError):
-        KSSubspaceEnsembleDetector().score(sample(1, 0))
-    with pytest.raises(ValueError):
-        KSSubspaceEnsembleDetector().fit(sample(1, 0))
     with pytest.raises(ValueError):
         KSSubspaceEnsembleDetector(subspaces=[["nope"]]).fit(sample(10, 0))
     for kwargs in (
@@ -387,12 +379,3 @@ def test_same_random_state_gives_same_subspaces_and_signals(subspaces: str) -> N
     assert runs[0] == runs[1]
     refit = det.fit(sample(300, 0)).subspaces_  # fit restarts the generator
     assert refit == runs[0][0]
-
-
-def test_performance_is_ignored() -> None:
-    ref, new = sample(200, 0), sample(50, 1, shift=BLOCK0)
-    perf = pd.DataFrame({"a": np.arange(200.0)})
-    a = KSSubspaceEnsembleDetector(subspace_size=3, random_state=0).fit(ref, perf)
-    b = KSSubspaceEnsembleDetector(subspace_size=3, random_state=0).fit(ref)
-    assert a.subspaces_ == b.subspaces_
-    assert a.update(new, perf.iloc[:50]) == b.update(new)

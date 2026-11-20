@@ -4,14 +4,26 @@ from sklearn.ensemble import RandomForestClassifier
 
 from asf.online.streams.stream import InstanceStream
 
-from .conftest import make_stream
+from .conftest import CUTOFF, make_stream
 
 from typing import Any
 
 from asf.online.base import AbstractOnlineSelector, Observation
 from asf.online.evaluation import run_prequential
 from asf.online.prediction import PredictionRecord
-from asf.online.selectors import StaticOnlineSelector
+from asf.online.gate import UncertaintyGate
+from asf.online.imputation import SampledImputer
+from asf.online.selectors import (
+    FrugalPairwiseSelector,
+    LinTSSelector,
+    OnlineEPMSelector,
+    OnlinePairwiseSelector,
+    StaticOnlineSelector,
+    ThompsonSamplingSelector,
+)
+from asf.online.selectors.bandits import SlidingWindow
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier
 from asf.selectors import PairwiseClassifier
 
 
@@ -163,3 +175,39 @@ def test_maximize_quality_rejects_runtime_constraints() -> None:
             _Budgeted(maximize=True),
             InstanceStream(features, performance, cutoff=float("inf")),
         )
+
+
+DETERMINISTIC = {
+    "ts_gated": lambda seed: ThompsonSamplingSelector(
+        budget=CUTOFF, gate=UncertaintyGate(rate=0.3, random_state=0), random_state=seed
+    ),
+    "lints_sampled_refit": lambda seed: LinTSSelector(
+        budget=CUTOFF,
+        weighting=SlidingWindow(50),
+        imputation=SampledImputer(),
+        random_state=seed,
+    ),
+    "frugal": lambda seed: FrugalPairwiseSelector(
+        model_class=DecisionTreeClassifier, random_state=seed
+    ),
+    "rook": lambda seed: OnlinePairwiseSelector(reference_period=20, random_state=seed),
+    "epm": lambda seed: OnlineEPMSelector(
+        strategy="epsilon_greedy",
+        epsilon=0.3,
+        estimator=RandomForestRegressor(n_estimators=10),
+        uncertainty=None,
+        budget=CUTOFF,
+        random_state=seed,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(DETERMINISTIC))
+def test_same_seed_same_run(stream: InstanceStream, name: str) -> None:
+    def run(seed: int) -> pd.DataFrame:
+        result = run_prequential(DETERMINISTIC[name](seed), stream, n_warmstart=10)
+        return result.steps.drop(columns=["selector_seconds", "detector_seconds"])
+
+    pd.testing.assert_frame_equal(run(3), run(3))
+    if name in ("ts_gated", "lints_sampled_refit", "epm"):  # explore at random
+        assert not run(3)["primary"].equals(run(4)["primary"])

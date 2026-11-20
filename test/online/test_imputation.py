@@ -37,6 +37,8 @@ from asf.online.selectors.online_epm import OnlineEPMSelector
 from asf.online.streams.stream import InstanceStream
 from asf.preprocessing.schmee_hahn_imputer import schmee_hahn_impute
 
+from .conftest import stream_from
+
 
 def _rng(seed: int = 0) -> np.random.Generator:
     return np.random.default_rng(seed)
@@ -266,12 +268,7 @@ def _timeout_stream(n: int = 150, seed: int = 0) -> InstanceStream:
     f0 = rng.choice([-2.0, 2.0], n) + rng.normal(0, 0.3, n)
     x = np.column_stack([f0, rng.normal(size=n)])
     perf = np.where((f0 < 0)[:, None], [[5.0, 900.0]], [[900.0, 5.0]])
-    idx = pd.Index([f"i{k}" for k in range(n)])
-    return InstanceStream(
-        pd.DataFrame(x, index=idx, columns=["f0", "f1"]),
-        pd.DataFrame(perf, index=idx, columns=["a", "b"]),
-        cutoff=BANDIT_CUTOFF,
-    )
+    return stream_from(x, perf, cutoff=BANDIT_CUTOFF)
 
 
 @pytest.mark.parametrize(
@@ -290,16 +287,9 @@ def _timeout_stream(n: int = 150, seed: int = 0) -> InstanceStream:
 @pytest.mark.parametrize(
     "imputation", [CutoffImputer, DropCensored, ExpectedImputer, SampledImputer]
 )
-def test_bandit_stream_runs_and_is_deterministic(make: Any, imputation: Any) -> None:
-    stream = _timeout_stream()
-    runs = [
-        run_prequential(make(imputation()), stream, n_warmstart=20) for _ in range(2)
-    ]
-    timing = [c for c in runs[0].steps.columns if "seconds" in c]
-    pd.testing.assert_frame_equal(
-        runs[0].steps.drop(columns=timing), runs[1].steps.drop(columns=timing)
-    )
-    timeouts = (runs[0].steps["user_cost"] > BANDIT_CUTOFF).mean()
+def test_bandit_imputation_on_a_timeout_stream(make: Any, imputation: Any) -> None:
+    result = run_prequential(make(imputation()), _timeout_stream(), n_warmstart=20)
+    timeouts = (result.steps["user_cost"] > BANDIT_CUTOFF).mean()
     if imputation is DropCensored:
         # Dropping every timeout hides that the wrong arm is bad (BlindUCB).
         assert timeouts > 0.25
@@ -313,7 +303,7 @@ def test_bandit_imputation_is_a_recorded_parameter() -> None:
     assert isinstance(sel.describe_params()["imputation"], SampledImputer)
 
 
-# ===================================================== online EPM (A1)
+# ===================================================== online EPM
 EPM_CUTOFF = 100.0
 
 

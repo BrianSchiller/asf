@@ -1,4 +1,4 @@
-"""ADWIN and EDDM on scalar streams, also with censored values (B3)."""
+"""ADWIN and EDDM on scalar streams, also with censored values."""
 
 from __future__ import annotations
 
@@ -6,11 +6,9 @@ import math
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import pytest
 from scipy.stats import norm
 
-from asf.online.base import AbstractOnlineSelector, Observation
 from asf.online.drift import (
     ADWINDetector,
     DriftSignal,
@@ -26,9 +24,10 @@ from asf.online.imputation import (
     ExpectedImputer,
     SampledImputer,
 )
-from asf.online.prediction import PredictionRecord
 from asf.online.retraining import ResetResponse
 from asf.online.streams.stream import InstanceStream
+
+from .conftest import PredictingSelector, stream_from
 
 WIDE = (-10.0, 10.0)
 
@@ -368,24 +367,6 @@ def test_invalid_arguments() -> None:
 
 
 # ------------------------------------------------- with a selector (runtime)
-class _Predicting(AbstractOnlineSelector):
-    """Always picks ``a`` and predicts a runtime of 5 for it."""
-
-    def _fit_initial(
-        self, features: pd.DataFrame, performance: pd.DataFrame, **kw: Any
-    ) -> None:
-        self.n_resets = 0
-
-    def _select(self, features: pd.DataFrame) -> PredictionRecord:
-        return PredictionRecord(chosen="a", predicted_runtime=5.0)
-
-    def _observe(self, observation: Observation) -> None:
-        pass
-
-    def _reset_model(self) -> None:
-        self.n_resets += 1
-
-
 JUMP = 300  # position in the stream where ``a`` gets 4 times slower
 N_WARM = 10
 RESIDUALS = (-math.log(10.0), math.log(10.0))
@@ -395,19 +376,16 @@ def runtime_stream(cutoff: float, n: int = 500, seed: int = 0) -> InstanceStream
     """``a`` takes about 5 s (as predicted) before ``JUMP`` and about 20 s after."""
     rng = np.random.default_rng(seed)
     a = np.where(np.arange(n) < JUMP, 5.0, 20.0) * np.exp(rng.normal(0, 0.1, n))
-    index = pd.Index([f"i{k}" for k in range(n)])
-    return InstanceStream(
-        pd.DataFrame({"f0": rng.normal(size=n)}, index=index),
-        pd.DataFrame({"a": a, "b": 50.0}, index=index),
-        cutoff=cutoff,
-        drift_points=(JUMP,),
-        name="jump",
-    )
+    f0 = rng.normal(size=n)
+    perf = np.column_stack([a, np.full(n, 50.0)])
+    return stream_from(f0, perf, cutoff=cutoff, drift_points=(JUMP,))
 
 
 def detected(detector: AbstractScalarDriftDetector, cutoff: float) -> list[int]:
     """Stream positions at which the detector signalled drift."""
-    selector = _Predicting(detector=detector, drift_statistic=LogRuntimeResidual())
+    selector = PredictingSelector(
+        detector=detector, drift_statistic=LogRuntimeResidual()
+    )
     result = run_prequential(selector, runtime_stream(cutoff), n_warmstart=N_WARM)
     steps = result.steps
     assert steps["drift_signal"].sum() == len(selector.drift_steps)
@@ -458,7 +436,7 @@ def test_eddm_counts_timeouts_above_the_threshold_as_errors() -> None:
 
 def test_detector_restarts_when_the_model_is_reset() -> None:
     detector = ADWINDetector(value_range=RESIDUALS)
-    selector = _Predicting(
+    selector = PredictingSelector(
         detector=detector,
         drift_statistic=LogRuntimeResidual(),
         drift_response=ResetResponse(),

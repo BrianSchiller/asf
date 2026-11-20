@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from asf.online.base import Observation
 from asf.online.evaluation import run_prequential
 from asf.online.selectors.bandits import (
     AbstractContextualBandit,
@@ -39,6 +38,8 @@ from asf.online.selectors.bandits import (
 )
 from asf.online.streams.stream import InstanceStream
 
+from .conftest import observe_runs, stream_from
+
 ALGOS = ["a", "b", "c"]
 CUTOFF = 1000.0
 SELECTORS = [
@@ -56,19 +57,6 @@ SELECTORS = [
 
 
 # ---------------------------------------------------------------- helpers
-def _stream(
-    features: np.ndarray, perf: np.ndarray, drift_points: tuple[int, ...] = ()
-) -> InstanceStream:
-    idx = pd.Index([f"i{k}" for k in range(len(features))])
-    cols = [f"f{j}" for j in range(features.shape[1])]
-    return InstanceStream(
-        pd.DataFrame(features, index=idx, columns=cols),
-        pd.DataFrame(perf, index=idx, columns=ALGOS),
-        cutoff=CUTOFF,
-        drift_points=tuple(drift_points),
-    )
-
-
 def region_stream(n: int = 600, seed: int = 0) -> InstanceStream:
     """Stationary; best arm depends on the sign of f0 (a if f0<0, b otherwise).
 
@@ -78,7 +66,7 @@ def region_stream(n: int = 600, seed: int = 0) -> InstanceStream:
     f0 = rng.choice([-3.0, 3.0], n) + rng.normal(0, 0.5, n)
     x = np.column_stack([f0, rng.normal(size=n)])
     perf = np.where((f0 < 0)[:, None], [[5, 2000, 300]], [[2000, 5, 300]])
-    return _stream(x, perf.astype(float))
+    return stream_from(x, perf, cutoff=CUTOFF)
 
 
 def abrupt_drift_stream(
@@ -89,15 +77,7 @@ def abrupt_drift_stream(
     x = rng.normal(size=(n, 2))
     before = np.arange(n) < drift
     perf = np.where(before[:, None], [[5, 2000, 300]], [[2000, 5, 300]])
-    return _stream(x, perf.astype(float), drift_points=(drift,))
-
-
-def _obs(stream: InstanceStream, i: int, algos: list[str]) -> Observation:
-    item_id = stream.features.index[i]
-    truth = stream.true_runtimes(item_id)
-    runs = {a: float(min(truth[a], CUTOFF)) for a in algos}
-    censored = frozenset(a for a in algos if truth[a] > CUTOFF)
-    return Observation(item_id, stream.features.iloc[[i]], runs, censored, CUTOFF)
+    return stream_from(x, perf, cutoff=CUTOFF, drift_points=(drift,))
 
 
 class _ForceRefit(Weighting):
@@ -223,7 +203,7 @@ def test_incremental_and_refit_modes_agree(cls, make_weighting, use_confidence) 
         sel.fit(stream.features.iloc[:40], stream.performance.iloc[:40])
         rng = np.random.default_rng(3)
         for i in range(40, 120):  # same scripted feedback for both
-            sel.observe(_obs(stream, i, [str(rng.choice(ALGOS))]))
+            sel.observe(observe_runs(stream, i, [str(rng.choice(ALGOS))]))
         sels.append(sel)
 
     z = sels[0]._feature_vector(stream.features.iloc[[0]])
@@ -244,23 +224,8 @@ def test_ucb_tries_every_arm_before_repeating() -> None:
     for i in range(3):
         arm = sel.propose(stream.features.iloc[[i]])[0][0]
         played.append(arm)
-        sel.observe(_obs(stream, i, [arm]))
+        sel.observe(observe_runs(stream, i, [arm]))
     assert sorted(played) == ALGOS
-
-
-def test_thompson_sampling_is_reproducible() -> None:
-    def run() -> list[str]:
-        stream = region_stream(n=60)
-        sel = LinTSSelector(random_state=7, budget=CUTOFF)
-        sel.fit(stream.features.iloc[:10], stream.performance.iloc[:10])
-        out = []
-        for i in range(10, 60):
-            arm = sel.propose(stream.features.iloc[[i]])[0][0]
-            out.append(arm)
-            sel.observe(_obs(stream, i, [arm]))
-        return out
-
-    assert run() == run()
 
 
 def test_reset_arms_forgets_everything() -> None:
@@ -291,7 +256,7 @@ def test_warm_start_without_budget_warns() -> None:
     sel = UCBSelector()
     sel.fit(stream.features.iloc[:10], stream.performance.iloc[:10])
     with pytest.warns(UserWarning, match="budget"):
-        sel.observe(_obs(stream, 10, ["a"]))
+        sel.observe(observe_runs(stream, 10, ["a"]))
 
 
 def test_confidence_fixed_at_arrival_and_re_estimated() -> None:
@@ -314,7 +279,7 @@ def test_confidence_fixed_at_arrival_and_re_estimated() -> None:
     data = reest.history_.get("a")
     before = reest.weighting.weights(None, 0, data.steps, data.Z)
     for i in range(40, 45):
-        reest.observe(_obs(stream, i, ["a"]))
+        reest.observe(observe_runs(stream, i, ["a"]))
     data = reest.history_.get("a")
     after = reest.weighting.weights(None, 0, data.steps, data.Z)
     assert not np.allclose(before, after[: len(before)])  # history re-scored
@@ -375,8 +340,8 @@ def test_linear_bandits_learn_feature_dependent_best_arm() -> None:
 def test_non_stationary_selectors_switch_arm_after_abrupt_drift(
     make: Callable[[], AbstractContextualBandit],
 ) -> None:
-    stream = abrupt_drift_stream()  # best arm a -> b at step 300
-    adapted = _tail(make(), stream, 20, 200)
+    stream = abrupt_drift_stream(n=400, drift=200)  # best arm a -> b
+    adapted = _tail(make(), stream, 20, 150)
     assert (adapted["primary"] == "b").mean() > 0.5
 
 
@@ -437,7 +402,7 @@ def _scripted(sel: AbstractContextualBandit, n: int = 60) -> AbstractContextualB
     sel.fit(stream.features.iloc[:0], stream.performance.iloc[:0])
     rng = np.random.default_rng(0)
     for i in range(n):
-        sel.observe(_obs(stream, i, [str(rng.choice(ALGOS))]))
+        sel.observe(observe_runs(stream, i, [str(rng.choice(ALGOS))]))
     return sel
 
 

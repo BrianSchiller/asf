@@ -1,27 +1,19 @@
-"""F1 interfaces: prediction record, extra-run gate, detectors, drift responses."""
+"""The online selector base: prediction record, detectors, drift responses."""
 
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from asf.online.base import AbstractOnlineSelector, Observation
+from asf.online.base import Observation
 from asf.online.drift import (
-    AbstractDriftDetector,
-    AbstractScalarDriftDetector,
-    DriftSignal,
     LogRuntimeResidual,
 )
 from asf.online.evaluation import run_prequential
 from asf.online.gate import (
-    AbstractExtraRunGate,
-    AllNomineesGate,
-    GateContext,
-    NoExtrasGate,
     AfterDriftGate,
 )
 from asf.online.prediction import PredictionRecord
@@ -38,102 +30,17 @@ from asf.online.selectors import (
     StaticOnlineSelector,
     ThompsonSamplingSelector,
 )
-from asf.online.streams.stream import InstanceStream
 from asf.selectors import PairwiseClassifier
 
-from .conftest import CUTOFF, make_stream
-
-
-# ---------------------------------------------------------------- helpers
-class _ScriptedDetector(AbstractDriftDetector):
-    """Feature detector that signals drift at given update counts."""
-
-    def __init__(self, drift_at: set[int]) -> None:
-        self.drift_at = drift_at
-        self.n_updates = 0
-        self.fit_sizes: list[int] = []
-        self.n_resets = 0
-
-    def fit(
-        self, features: pd.DataFrame, performance: pd.DataFrame | None = None
-    ) -> "_ScriptedDetector":
-        self.fit_sizes.append(len(features))
-        return self
-
-    def update(
-        self, features: pd.DataFrame, performance: pd.DataFrame | None = None
-    ) -> DriftSignal:
-        self.n_updates += 1
-        return DriftSignal(drift=self.n_updates in self.drift_at, score=1.0)
-
-    def score(self, features: pd.DataFrame) -> np.ndarray:
-        return np.full(len(features), 0.25)
-
-    def reset(
-        self, features: pd.DataFrame, performance: pd.DataFrame | None = None
-    ) -> None:
-        self.n_resets += 1
-
-
-class _ScalarRecorder(AbstractScalarDriftDetector):
-    """Scalar detector recording its inputs; drifts when a value exceeds 1."""
-
-    def __init__(self) -> None:
-        self.values: list[tuple[float, bool]] = []
-        self.n_resets = 0
-
-    def update(self, value: float, censored: bool = False) -> DriftSignal:
-        self.values.append((value, censored))
-        return DriftSignal(drift=value > 1.0, score=value)
-
-    def reset(self) -> None:
-        self.n_resets += 1
-
-
-class _Predicting(AbstractOnlineSelector):
-    """Always picks ``a`` and predicts a runtime of 5 for it."""
-
-    def _fit_initial(
-        self, features: pd.DataFrame, performance: pd.DataFrame, **kw: Any
-    ) -> None:
-        self.n_resets = 0
-
-    def _select(self, features: pd.DataFrame) -> PredictionRecord:
-        return PredictionRecord(
-            chosen="a",
-            predicted_runtime=5.0,
-            uncertainty=0.5,
-            scores={"a": 1.0, "b": 0.0},
-        )
-
-    def _observe(self, observation: Observation) -> None:
-        pass
-
-    def _reset_model(self) -> None:
-        self.n_resets += 1
-
-
-class _FixedGate(AbstractExtraRunGate):
-    def __init__(self, answer: Sequence[str], needs_score: bool = False) -> None:
-        self.answer = list(answer)
-        self.needs_instance_score = needs_score
-        self.contexts: list[GateContext] = []
-
-    def extras(self, context: GateContext) -> Sequence[str]:
-        self.contexts.append(context)
-        return self.answer
-
-
-def three_algo_stream(n: int = 80) -> InstanceStream:
-    rng = np.random.default_rng(1)
-    x = rng.normal(size=(n, 2))
-    perf = np.tile([5.0, 50.0, 20.0], (n, 1))
-    idx = pd.Index([f"i{k}" for k in range(n)])
-    return InstanceStream(
-        pd.DataFrame(x, index=idx, columns=["f0", "f1"]),
-        pd.DataFrame(perf, index=idx, columns=["a", "b", "c"]),
-        cutoff=CUTOFF,
-    )
+from .conftest import (
+    CUTOFF,
+    FixedGate,
+    PredictingSelector,
+    ScalarRecorder,
+    ScriptedDetector,
+    make_stream,
+    three_algo_stream,
+)
 
 
 # ------------------------------------------------------- prediction record
@@ -158,80 +65,20 @@ def test_prediction_record_of_rook_and_bandit() -> None:
 
 
 def test_custom_record_is_logged() -> None:
-    res = run_prequential(_Predicting(), make_stream(), n_warmstart=10)
+    res = run_prequential(PredictingSelector(), make_stream(), n_warmstart=10)
     assert (res.steps["pred_runtime"] == 5.0).all()
     assert (res.steps["pred_uncertainty"] == 0.5).all()
-
-
-# ---------------------------------------------------------------- gates
-def test_default_gates_and_no_extras_gate_on_rook() -> None:
-    assert isinstance(OnlinePairwiseSelector().gate_, AllNomineesGate)
-    stream = three_algo_stream()
-    sel = OnlinePairwiseSelector(n_additional=2, reference_period=10, random_state=0)
-    assert (run_prequential(sel, stream).steps["n_runs"] == 3).all()
-    sel = OnlinePairwiseSelector(
-        reference_period=10, gate=NoExtrasGate(), random_state=0
-    )
-    steps = run_prequential(sel, stream).steps
-    assert (steps["n_runs"] == 1).all()
-    assert (steps["extras"] == "[]").all()
-
-
-def test_gate_can_add_extras_to_a_bandit_and_answers_are_cleaned() -> None:
-    gate = _FixedGate(["c", "c", "a", "b"])  # duplicates and possibly primary
-    sel = ThompsonSamplingSelector(budget=CUTOFF, gate=gate, random_state=0)
-    steps = run_prequential(sel, three_algo_stream(), n_warmstart=5).steps
-    assert (steps["n_runs"] == 3).all()
-    ctx = gate.contexts[3]
-    alternatives = ctx.ranked_alternatives()
-    assert ctx.step == 3 and ctx.candidates == alternatives  # A4: nominees
-    assert sorted(alternatives + (ctx.prediction.chosen,)) == ["a", "b", "c"]
-    scores = ctx.prediction.scores
-    assert scores is not None
-    assert [scores[a] for a in alternatives] == sorted(
-        (scores[a] for a in alternatives), reverse=True
-    )
-
-
-def test_gate_with_unknown_algorithm_fails() -> None:
-    sel = ThompsonSamplingSelector(budget=CUTOFF, gate=_FixedGate(["nope"]))
-    with pytest.raises(ValueError, match="unknown algorithms"):
-        run_prequential(sel, three_algo_stream(), n_warmstart=5)
-
-
-def test_extras_use_the_primary_budget() -> None:
-    class _Budgeted(_Predicting):
-        def _select(self, features: pd.DataFrame) -> PredictionRecord:
-            return PredictionRecord(chosen="a", budget=7.0, candidates=("b",))
-
-    sel = _Budgeted()
-    sel.fit(make_stream().features.iloc[:5], make_stream().performance.iloc[:5])
-    assert sel.propose(make_stream().features.iloc[[6]]) == [("a", 7.0), ("b", 7.0)]
-
-
-def test_gate_receives_instance_score_and_drift_context() -> None:
-    gate = _FixedGate([], needs_score=True)
-    detector = _ScriptedDetector(drift_at={3})
-    sel = ThompsonSamplingSelector(
-        budget=CUTOFF, gate=gate, detector=detector, random_state=0
-    )
-    steps = run_prequential(sel, make_stream(), n_warmstart=10).steps
-    assert gate.contexts[0].instance_score == 0.25
-    assert (steps["instance_score"] == 0.25).all()
-    assert gate.contexts[2].steps_since_drift is None
-    assert gate.contexts[3].steps_since_drift == 1  # drift on the 3rd update
-    assert gate.contexts[3].last_signal is not None
 
 
 # ------------------------------------------------------------- detectors
 def test_feature_detector_reference_size_and_warm_start_fit() -> None:
     sel = ThompsonSamplingSelector(
-        budget=CUTOFF, detector=_ScriptedDetector(set()), random_state=0
+        budget=CUTOFF, detector=ScriptedDetector(set()), random_state=0
     )
     with pytest.raises(ValueError, match="detector_reference_size"):
         run_prequential(sel, make_stream())
 
-    detector = _ScriptedDetector(set())
+    detector = ScriptedDetector(set())
     sel = ThompsonSamplingSelector(
         budget=CUTOFF,
         detector=detector,
@@ -245,7 +92,7 @@ def test_feature_detector_reference_size_and_warm_start_fit() -> None:
     assert steps["detector_score"].iloc[:25].isna().all()
     assert (steps["detector_score"].iloc[25:] == 1.0).all()
 
-    detector = _ScriptedDetector(set())  # warm start: fitted on the prefix
+    detector = ScriptedDetector(set())  # warm start: fitted on the prefix
     sel = ThompsonSamplingSelector(budget=CUTOFF, detector=detector, random_state=0)
     run_prequential(sel, make_stream(), n_warmstart=30)
     assert detector.fit_sizes == [30]
@@ -253,16 +100,16 @@ def test_feature_detector_reference_size_and_warm_start_fit() -> None:
 
 def test_scalar_detector_requires_statistic() -> None:
     with pytest.raises(ValueError, match="drift_statistic"):
-        _Predicting(detector=_ScalarRecorder())
+        PredictingSelector(detector=ScalarRecorder())
     with pytest.raises(ValueError, match="scalar"):
-        _Predicting(drift_statistic=LogRuntimeResidual())
+        PredictingSelector(drift_statistic=LogRuntimeResidual())
     with pytest.raises(TypeError):
-        _Predicting(detector=object())  # type: ignore[arg-type]
+        PredictingSelector(detector=object())  # type: ignore[arg-type]
 
 
 def test_scalar_detector_gets_log_residual() -> None:
-    detector = _ScalarRecorder()
-    sel = _Predicting(detector=detector, drift_statistic=LogRuntimeResidual())
+    detector = ScalarRecorder()
+    sel = PredictingSelector(detector=detector, drift_statistic=LogRuntimeResidual())
     stream = make_stream()
     steps = run_prequential(sel, stream, n_warmstart=10).steps
     observed = stream.performance["a"].iloc[10:].to_numpy()
@@ -288,8 +135,8 @@ def test_log_residual_censoring_and_missing_prediction() -> None:
 
 # -------------------------------------------------------- drift responses
 def test_after_drift_gate_with_rereference_response() -> None:
-    inner = _FixedGate([], needs_score=True)
-    detector = _ScriptedDetector(drift_at={3})
+    inner = FixedGate([], needs_score=True)
+    detector = ScriptedDetector(drift_at={3})
     sel = ThompsonSamplingSelector(
         budget=CUTOFF,
         gate=AfterDriftGate(inner),
@@ -310,7 +157,7 @@ def test_after_drift_gate_with_rereference_response() -> None:
 
 
 def test_reset_response_resets_bandit_and_rereferences_detector() -> None:
-    detector = _ScriptedDetector(drift_at={5})
+    detector = ScriptedDetector(drift_at={5})
     sel = DiscountedTSSelector(
         budget=CUTOFF,
         detector=detector,
@@ -328,8 +175,8 @@ def test_reset_response_resets_bandit_and_rereferences_detector() -> None:
 
 
 def test_custom_selector_reset_hook_and_scalar_rereference() -> None:
-    detector = _ScalarRecorder()
-    sel = _Predicting(
+    detector = ScalarRecorder()
+    sel = PredictingSelector(
         detector=detector,
         drift_statistic=LogRuntimeResidual(),
         drift_response=ResetResponse(),
@@ -359,18 +206,18 @@ def test_unsupported_response_or_policy_fails_at_fit() -> None:
 
 def test_rook_defaults_to_retrain_response_and_retrains_once_per_step() -> None:
     assert isinstance(
-        OnlinePairwiseSelector(detector=_ScriptedDetector(set())).drift_responses_[0],
+        OnlinePairwiseSelector(detector=ScriptedDetector(set())).drift_responses_[0],
         RetrainResponse,
     )
     assert (
         OnlinePairwiseSelector(
-            detector=_ScriptedDetector(set()), retrain_every=5
+            detector=ScriptedDetector(set()), retrain_every=5
         ).drift_responses_
         == ()
     )
 
     # drift response and policy fire on the same step: a single retraining
-    detector = _ScriptedDetector(drift_at={10})
+    detector = ScriptedDetector(drift_at={10})
     sel = OnlinePairwiseSelector(
         reference_period=20,
         detector=detector,
@@ -391,10 +238,9 @@ def test_protocol_follows_n_warmstart() -> None:
     static = StaticOnlineSelector(PairwiseClassifier(model_class=_Dummy))
     with pytest.raises(ValueError, match="warm start"):
         run_prequential(static, stream)
-    assert run_prequential(_Predicting(), stream, n_warmstart=5).meta["protocol"] == (
-        "warm"
-    )
-    assert run_prequential(_Predicting(), stream).meta["protocol"] == "cold"
+    warm = run_prequential(PredictingSelector(), stream, n_warmstart=5)
+    assert warm.meta["protocol"] == "warm"
+    assert run_prequential(PredictingSelector(), stream).meta["protocol"] == "cold"
 
 
 class _Dummy:  # never fitted: the cold-start check fails before
