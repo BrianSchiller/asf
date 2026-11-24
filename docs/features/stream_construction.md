@@ -83,3 +83,33 @@ Instances without a key value are dropped with a warning. `jitter` adds
 Gaussian noise to the rank (scaled to [0, 1]), so the stream is only roughly
 sorted and differs per seed; `jitter=0` sorts exactly, with ties broken by
 the seed.
+
+## Bin packing (Rook et al.)
+
+`load_bin_packing(folder)` reads the `.bpp` files of one instance set of
+[Kevin-Sim/BPP](https://github.com/Kevin-Sim/BPP), packs every instance with
+best, first, next and worst fit, and returns the Falkenauer fitness (`k = 2`,
+higher is better) as performance and `cutoff = inf`. Selectors therefore need
+`maximize=True`. The features are the 10 tsfresh features Rook et al. selected,
+computed with numpy; on `E_120_N_40_60` (the set their code uses, although the
+paper describes `U(20, 100)` items) they and the fitness values match the
+authors' `BP_selected_features.csv`.
+
+```python
+from asf.online.streams import grouped_stream, sorted_stream
+from asf.online.streams.loaders import load_bin_packing
+
+features, performance, cutoff = load_bin_packing("BppInstances/E_120_N_40_60")
+winner = performance.idxmax(axis=1)
+
+# sudden3: 500 reference instances won by BF/FF/WF, the rest of them, then NF
+stream = grouped_stream(features, performance, cutoff, winner,
+                        schedule=[("BF", "FF", "WF"), ("BF", "FF", "WF"), "NF"],
+                        segment_length=[500, 2500, 1000], seed=0)
+# smoothWFFF: by the better of FF and WF, best first
+stream = sorted_stream(features, performance, cutoff,
+                       key=performance[["FF", "WF"]].max(axis=1), ascending=False)
+```
+
+Ties in best and worst fit go to the earliest opened bin, which reproduces the
+authors' fitness values.

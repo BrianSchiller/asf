@@ -395,6 +395,21 @@ def test_maximize_mode_uses_raw_quality() -> None:
     assert (res.steps["primary"].tail(50) == "a").mean() > 0.9
 
 
+@pytest.mark.parametrize("cls", [DiscountedUCBSelector, SlidingWindowUCBSelector])
+def test_unit_reward_selectors_maximize_raw_quality(cls: type) -> None:
+    """Their default ``"unit"`` reward is for runtimes; qualities are used raw."""
+    rng = np.random.default_rng(0)
+    idx = pd.Index([f"i{k}" for k in range(200)])
+    stream = InstanceStream(
+        pd.DataFrame(rng.normal(size=(200, 2)), index=idx, columns=["f0", "f1"]),
+        pd.DataFrame(np.tile([[0.9, 0.1, 0.5]], (200, 1)), index=idx, columns=ALGOS),
+        cutoff=float("inf"),
+    )
+    res = run_prequential(cls(maximize=True, random_state=0), stream, n_warmstart=10)
+    # discounting keeps exploring, so the best arm wins clearly but not always
+    assert (res.steps["primary"].tail(50) == "a").mean() > 0.6
+
+
 # ---------------------------------------------------------------- DS-TS, SW-TS, f-dsw
 def _scripted(sel: AbstractContextualBandit, n: int = 60) -> AbstractContextualBandit:
     """Cold start, then ``n`` observations of randomly chosen arms."""

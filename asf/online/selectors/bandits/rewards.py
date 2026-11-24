@@ -17,7 +17,9 @@ class RewardTransform:
       visible (as in Tornede et al.).
     * ``"par"``: ``-PAR_k / (k * cutoff)`` in ``[-1, 0]``; mostly "solved or
       not", since fast runs all get almost 0.
-    * ``"unit"``: the log reward rescaled to ``[0, 1]``, for Beta posteriors.
+    * ``"unit"``: the log reward rescaled to ``[0, 1]``, for Beta posteriors;
+      when maximizing, the raw quality (which must already lie in ``[0, 1]``,
+      e.g. bin-packing fitness).
     * ``"solved"``: 1 if solved, else 0.
     * ``"raw"``: the value when maximizing, its negation otherwise.
     * ``"auto"``: ``"raw"`` when maximizing, ``"log"`` otherwise.
@@ -33,6 +35,8 @@ class RewardTransform:
 
     def resolve(self, cutoff: float, maximize: bool) -> str:
         """The concrete kind used for this cutoff / objective."""
+        if self.kind == "unit" and maximize:
+            return "raw"  # qualities need no rescaling; Beta posteriors check [0, 1]
         if self.kind != "auto":
             return self.kind
         return "raw" if maximize else "log"
